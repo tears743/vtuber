@@ -1,0 +1,28 @@
+{
+  "name": "remotion",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts Overlay --codec=vp9 --image-format=png",
+    "render:webm": "remotion render src/index.ts Overlay --codec=vp9 --image-format=png --output=output/overlay.webm"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@remotion/cli": "4.0.475",
+    "@remotion/player": "4.0.475",
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^7.4.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "remotion": "4.0.475"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
+  }
+}

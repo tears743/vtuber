@@ -100,12 +100,20 @@ class MediaDownloader:
                         if local_path:
                             existing["video"] = {"path": str(local_path)}
                 
-                if existing.get("images") or existing.get("video"):
+                # GitHub README 下载
+                if source in ("github_trending", "GitHub Trending") and not existing.get("readme"):
+                    repo_url = data.get("url", "") or assets.get("readme_url", "")
+                    readme_result = self._download_github_readme(repo_url, item_dir)
+                    if readme_result:
+                        existing["readme"] = readme_result
+                
+                if existing.get("images") or existing.get("video") or existing.get("readme"):
                     manifest[filepath.name] = existing
                     logger.info(
                         f"[downloader] {slug}: "
                         f"{len(existing.get('images', []))} images, "
-                        f"{'1 video' if existing.get('video') else 'no video'}"
+                        f"{'1 video' if existing.get('video') else 'no video'}, "
+                        f"{'README' if existing.get('readme') else ''}"
                     )
                     
             except Exception as e:
@@ -116,11 +124,12 @@ class MediaDownloader:
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         
-        total_images = sum(len(v["images"]) for v in manifest.values())
-        total_videos = sum(1 for v in manifest.values() if v["video"])
+        total_images = sum(len(v.get("images", [])) for v in manifest.values())
+        total_videos = sum(1 for v in manifest.values() if v.get("video"))
+        total_readmes = sum(1 for v in manifest.values() if v.get("readme"))
         logger.info(
             f"[downloader] 完成: {len(manifest)} 条素材, "
-            f"{total_images} 图片, {total_videos} 视频"
+            f"{total_images} 图片, {total_videos} 视频, {total_readmes} README"
         )
         
         return manifest
@@ -228,6 +237,115 @@ class MediaDownloader:
             timeout=30, encoding="utf-8", errors="replace",
         )
         return result.stdout.strip()
+    
+    def _download_github_readme(self, repo_url: str, item_dir: Path) -> dict | None:
+        """
+        下载 GitHub 仓库的 README.md 全文 + 内嵌图片/视频
+        
+        Args:
+            repo_url: e.g. https://github.com/owner/repo
+            item_dir: 本地保存目录
+            
+        Returns:
+            {"path": "README.md path", "images": ["img paths..."]} or None
+        """
+        import re
+        
+        if not repo_url or "github.com" not in repo_url:
+            return None
+        
+        try:
+            # 解析 owner/repo
+            parts = repo_url.rstrip("/").split("github.com/")
+            if len(parts) < 2:
+                return None
+            repo_path = parts[1]  # e.g. "owner/repo"
+            
+            # 下载 README.md（尝试多种文件名）
+            item_dir.mkdir(parents=True, exist_ok=True)
+            readme_local = item_dir / "README.md"
+            
+            if not readme_local.exists():
+                readme_content = None
+                for readme_name in ["README.md", "readme.md", "Readme.md", "README.rst", "README"]:
+                    raw_url = f"https://raw.githubusercontent.com/{repo_path}/HEAD/{readme_name}"
+                    try:
+                        resp = requests.get(raw_url, timeout=15, headers={
+                            "User-Agent": "Mozilla/5.0"
+                        })
+                        if resp.status_code == 200 and len(resp.text) > 10:
+                            readme_content = resp.text
+                            break
+                    except Exception:
+                        continue
+                
+                if not readme_content:
+                    logger.debug(f"[downloader] GitHub README 未找到: {repo_url}")
+                    return None
+                
+                with open(readme_local, "w", encoding="utf-8") as f:
+                    f.write(readme_content)
+            else:
+                with open(readme_local, "r", encoding="utf-8") as f:
+                    readme_content = f.read()
+            
+            # 提取并下载 README 中的图片
+            images = self._download_readme_images(readme_content, repo_path, item_dir)
+            
+            result = {
+                "path": str(readme_local),
+                "size_chars": len(readme_content),
+            }
+            if images:
+                result["images"] = images
+            
+            logger.info(f"[downloader] GitHub README: {repo_path} ({len(readme_content)} chars, {len(images)} images)")
+            return result
+            
+        except Exception as e:
+            logger.debug(f"[downloader] GitHub README 下载失败: {repo_url} - {e}")
+            return None
+    
+    def _download_readme_images(self, readme_content: str, repo_path: str, item_dir: Path) -> list[str]:
+        """
+        从 README.md 内容中提取图片 URL 并下载
+        
+        支持格式：
+        - ![alt](url)
+        - <img src="url">
+        """
+        import re
+        
+        images = []
+        img_dir = item_dir / "readme_images"
+        
+        # Markdown 图片: ![alt](url)
+        md_images = re.findall(r'!\[.*?\]\((.+?)\)', readme_content)
+        # HTML 图片: <img src="url">
+        html_images = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', readme_content)
+        
+        all_urls = list(dict.fromkeys(md_images + html_images))  # 去重保序
+        
+        # 最多下载 10 张
+        for i, url in enumerate(all_urls[:10]):
+            # 处理相对路径
+            if url.startswith("./") or (not url.startswith("http") and not url.startswith("//")):
+                url = f"https://raw.githubusercontent.com/{repo_path}/HEAD/{url.lstrip('./')}"
+            elif url.startswith("//"):
+                url = f"https:{url}"
+            
+            if not url.startswith("http"):
+                continue
+            
+            # 跳过 badge/shield 图片（太小没意义）
+            if "shields.io" in url or "badge" in url.lower() or "img.shields" in url:
+                continue
+            
+            local_path = self._download_image(url, img_dir, f"readme_img_{i:02d}")
+            if local_path:
+                images.append(str(local_path))
+        
+        return images
     
     def _load_json(self, filepath: Path) -> dict | None:
         """加载 JSON（处理双重编码）"""

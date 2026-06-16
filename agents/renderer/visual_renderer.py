@@ -480,13 +480,9 @@ def render_script_visual(
     types = set(v.get("type") for v in visual_items)
 
     if types == {"remotion"}:
-        # 全部 remotion → 直接整体渲染
-        output_path = output_dir / f"{script_id}_visual.mp4"
-        # 更新 script 用过滤后的 items
-        filtered_script = dict(script)
-        filtered_script["tracks"] = dict(tracks)
-        filtered_script["tracks"]["visual"] = visual_items
-        return render_visual_remotion(filtered_script, output_path)
+        # 全部 remotion → 已合并到 overlay 渲染，无需单独生成 visual.mp4
+        logger.info(f"[visual] {script_id}: 全 remotion，已合并到 overlay，跳过")
+        return None
 
     # 混合类型 → 分段处理
     segments = []

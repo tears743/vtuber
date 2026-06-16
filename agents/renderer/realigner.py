@@ -39,99 +39,131 @@ def realign_timeline(script: dict, audio_durations: dict[int, int]) -> dict:
 
 
 def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
-    """多轨模式对齐"""
+    """多轨模式对齐
+    
+    核心思路：
+    1. 从原始脚本构建"事件序列" — voice 说话段 + play_audio 静默段
+    2. voice 段用 TTS 实际时长替换
+    3. play_audio 段保持原时长
+    4. 顺序排列，确保不重叠
+    5. 用新旧时间映射同步 visual/overlay/background 轨
+    """
     tracks = aligned["tracks"]
     voice_items = tracks.get("voice", [])
     
     if not voice_items:
         return aligned
     
-    # Step 1: 修正 voice 轨时长和时间线，记录时间偏移
-    current_ms = 0
-    changes = 0
-    voice_timing = []  # 记录 [(start_ms, duration_ms)] 用于同步其他轨
-    time_shifts = []   # 记录 [(old_start, old_end, new_start, new_end)]
+    visual_items = tracks.get("visual", [])
     script_id = aligned.get("id", "unknown")
     
+    # 收集 play_audio 段（原始时间）
+    play_audio_ranges = []
+    for vitem in visual_items:
+        if vitem.get("type") == "video_clip" and vitem.get("play_audio"):
+            pa_start = vitem.get("start_ms", 0)
+            pa_dur = vitem.get("duration_ms", 0)
+            play_audio_ranges.append((pa_start, pa_start + pa_dur, pa_dur))
+    play_audio_ranges.sort(key=lambda x: x[0])
+    
+    # 构建事件序列：按原始 start_ms 排序所有 voice + play_audio
+    # voice event: ("voice", index, old_start, old_dur, new_dur)
+    # pa event: ("pa", pa_index, old_start, old_end, pa_dur)
+    events = []
+    
+    changes = 0
     for i, item in enumerate(voice_items):
         old_start = item.get("start_ms", 0)
         old_dur = item.get("duration_ms", 0)
-        old_end = old_start + old_dur
-        
-        # 计算间隔（voice 之间可能有 visual-only 时段）
-        if i == 0:
-            # 第一个 voice 的起始位置保持不变
-            current_ms = old_start
-        else:
-            # 后续 voice: 保持原有间隔，但限制最大间隔为 2 秒
-            # （原始脚本中可能有 play_audio 段占据的大间隔，对齐后不再需要）
-            prev_end = voice_items[i-1].get("start_ms", 0) + voice_items[i-1].get("duration_ms", 0)
-            gap = old_start - prev_end
-            if gap < 0:
-                gap = 0
-            gap = min(gap, 2000)  # 最大 2 秒转场间隔
-            current_ms = voice_timing[-1][0] + voice_timing[-1][1] + gap
-        
-        item["start_ms"] = current_ms
-        
-        # 添加音频文件引用
-        item["audio_file"] = f"audio/{script_id}/voice_{i:02d}.wav"
-        
         if i in audio_durations:
-            # 实际音频时长 + 200ms 尾部缓冲
             new_dur = audio_durations[i] + 200
-            item["duration_ms"] = new_dur
-            
             if abs(new_dur - old_dur) > 100:
-                logger.debug(
-                    f"  voice[{i}]: {old_dur}ms -> {new_dur}ms "
-                    f"(delta: {new_dur - old_dur:+d}ms)"
-                )
                 changes += 1
         else:
             new_dur = old_dur
+        events.append(("voice", i, old_start, old_dur, new_dur))
+    
+    for pi, (pa_start, pa_end, pa_dur) in enumerate(play_audio_ranges):
+        events.append(("pa", pi, pa_start, pa_dur, pa_dur))
+    
+    # 按原始 start_ms 排序
+    events.sort(key=lambda e: e[2])
+    
+    # 顺序放置事件
+    current_ms = events[0][2] if events else 0  # 第一个事件的原始起始
+    voice_timing = {}  # {voice_index: (new_start, new_dur)}
+    pa_timing = {}     # {pa_index: (new_start, new_dur)}
+    time_shifts = []   # [(old_start, old_end, new_start, new_end)]
+    
+    for evt in events:
+        evt_type = evt[0]
         
-        voice_timing.append((current_ms, new_dur))
-        time_shifts.append((old_start, old_end, current_ms, current_ms + new_dur))
-        current_ms += new_dur
+        if evt_type == "voice":
+            idx, old_start, old_dur, new_dur = evt[1], evt[2], evt[3], evt[4]
+            
+            # voice 之间加 300ms 间隔
+            if time_shifts:
+                current_ms = max(current_ms, time_shifts[-1][3] + 300)
+            
+            voice_timing[idx] = (current_ms, new_dur)
+            time_shifts.append((old_start, old_start + old_dur, current_ms, current_ms + new_dur))
+            
+            # 更新 voice item
+            voice_items[idx]["start_ms"] = current_ms
+            voice_items[idx]["duration_ms"] = new_dur
+            voice_items[idx]["audio_file"] = f"audio/{script_id}/voice_{idx:02d}.wav"
+            
+            current_ms += new_dur
+            
+        elif evt_type == "pa":
+            pi, old_start, old_dur = evt[1], evt[2], evt[3]
+            
+            # play_audio 前加 200ms 间隔
+            if time_shifts:
+                current_ms = max(current_ms, time_shifts[-1][3] + 200)
+            
+            pa_timing[pi] = (current_ms, old_dur)
+            time_shifts.append((old_start, old_start + old_dur, current_ms, current_ms + old_dur))
+            
+            current_ms += old_dur
     
     # Step 2: live2d 轨跟随 voice 轨时间
     live2d_items = tracks.get("live2d", [])
     for i, item in enumerate(live2d_items):
-        if i < len(voice_timing):
+        if i in voice_timing:
             item["start_ms"] = voice_timing[i][0]
             item["duration_ms"] = voice_timing[i][1]
     
-    # Step 2.5: 同步调整 visual/overlay/background 轨
-    # 构建时间映射函数：将原始时间点映射到新时间点
+    # Step 3: 同步调整 visual/overlay/background 轨
+    # 构建时间映射函数
+    time_shifts.sort(key=lambda x: x[0])
+    
     def map_time(old_ms: int) -> int:
         """将原始时间点映射到对齐后的时间点"""
         if not time_shifts:
             return old_ms
         
-        # 在第一个 voice 之前的保持不变
+        # 在第一个事件之前的保持不变
         if old_ms <= time_shifts[0][0]:
             return old_ms
         
-        # 在最后一个 voice 之后的按累积偏移调整
+        # 在最后一个事件之后的按累积偏移调整
         last_old_end = time_shifts[-1][1]
         last_new_end = time_shifts[-1][3]
         if old_ms >= last_old_end:
             offset = last_new_end - last_old_end
             return old_ms + offset
         
-        # 在两个 voice 之间的：线性插值
+        # 在事件范围内或间隔内：线性插值
         for idx in range(len(time_shifts)):
             old_start, old_end, new_start, new_end = time_shifts[idx]
             
-            # 在这个 voice 范围内
             if old_start <= old_ms <= old_end:
                 if old_end == old_start:
                     return new_start
                 ratio = (old_ms - old_start) / (old_end - old_start)
                 return int(new_start + ratio * (new_end - new_start))
             
-            # 在两个 voice 之间的间隔
             if idx < len(time_shifts) - 1:
                 next_old_start = time_shifts[idx + 1][0]
                 next_new_start = time_shifts[idx + 1][2]
@@ -145,9 +177,22 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
         
         return old_ms
     
+    # 更新 play_audio visual items 的时间（精确定位）
+    pa_idx = 0
+    for item in visual_items:
+        if item.get("type") == "video_clip" and item.get("play_audio"):
+            if pa_idx in pa_timing:
+                item["start_ms"] = pa_timing[pa_idx][0]
+                item["duration_ms"] = pa_timing[pa_idx][1]
+            pa_idx += 1
+    
+    # 其他 visual/overlay/background 用 map_time
     for track_name in ("visual", "overlay", "background"):
         items = tracks.get(track_name, [])
         for item in items:
+            # play_audio 的 visual 已经精确定位了，跳过
+            if item.get("type") == "video_clip" and item.get("play_audio"):
+                continue
             old_start = item.get("start_ms", 0)
             old_dur = item.get("duration_ms", 0)
             old_end = old_start + old_dur
@@ -156,7 +201,7 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             new_end = map_time(old_end)
             
             item["start_ms"] = new_start
-            item["duration_ms"] = max(new_end - new_start, 100)  # 最少 100ms
+            item["duration_ms"] = max(new_end - new_start, 100)
     
     # Step 3: 更新 total_duration_ms
     # 取所有轨的最大结束时间

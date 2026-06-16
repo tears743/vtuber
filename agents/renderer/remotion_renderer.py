@@ -41,7 +41,30 @@ def render_overlay(
         输出文件路径，或 None（渲染失败）
     """
     tracks = script.get("tracks", {})
-    overlay_items = tracks.get("overlay", [])
+    overlay_items = list(tracks.get("overlay", []))
+
+    # 合并 visual 轨中 type=remotion 的条目（stats_card/code_scroll/info_panel 等）
+    # 跳过 highlight_text — overlay 轨已经有了
+    visual_items = tracks.get("visual", [])
+    for vis in visual_items:
+        if vis.get("type") == "remotion" and vis.get("component"):
+            if vis["component"] == "highlight_text":
+                continue  # overlay 轨已包含，避免重复
+            # 转换为 overlay 格式: component → type
+            overlay_item = {
+                "start_ms": vis.get("start_ms", 0),
+                "duration_ms": vis.get("duration_ms", 5000),
+                "type": vis["component"],
+                "props": vis.get("props", {}),
+                "style": vis.get("style"),
+                "scale": vis.get("scale"),
+                "position": vis.get("props", {}).get("position"),
+                "offsetX": vis.get("offsetX"),
+                "offsetY": vis.get("offsetY"),
+            }
+            # 移除 None 值
+            overlay_item = {k: v for k, v in overlay_item.items() if v is not None}
+            overlay_items.append(overlay_item)
 
     if not overlay_items:
         logger.info("[remotion] 无 overlay 轨，跳过渲染")
@@ -49,6 +72,11 @@ def render_overlay(
 
     total_ms = script.get("total_duration_ms", 30000)
     total_frames = ms_to_frames(total_ms)
+
+    # 碰撞检测 & 自动修正
+    from agents.renderer.layout_validator import LayoutValidator
+    validator = LayoutValidator()
+    overlay_items = validator.validate_and_fix(overlay_items)
 
     # 构建 inputProps，写入临时文件（Windows 命令行引号转义有问题）
     input_props = {

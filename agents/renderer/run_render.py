@@ -643,6 +643,10 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):
     if not audio_seg_dir.exists():
         audio_seg_dir.mkdir(parents=True, exist_ok=True)
 
+    # 清理旧的视频音频缓存（防止脚本变更后 vi_idx 映射错位）
+    for old_audio in audio_seg_dir.glob("video_audio_*.wav"):
+        old_audio.unlink()
+
     total_ms = script.get("total_duration_ms", 30000)
     voice_items = script.get("tracks", {}).get("voice", [])
     visual_items = script.get("tracks", {}).get("visual", [])

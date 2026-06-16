@@ -814,15 +814,29 @@ class DirectorAgent:
 - 视频原声和角色声不混合
 
 ### ⚠️ 视频原声段时序约束（严格遵守）：
-- 当 visual 轨有 `play_audio: true` 的 video_clip 时，其 `start_ms` 必须**紧接**前一条 voice 的结束时间（间隔 ≤ 500ms），**不允许出现空白等待**
-- voice 轨在 video_clip(play_audio=true) 期间必须留空（不安排台词），留空段的 start_ms 必须和 video_clip 的 start_ms 一致
-- 引导播放视频的 voice 台词（如"来看原视频"）结束后，video_clip 必须立刻跟上，时间线示例：
+- 引导语 voice 结束后，video_clip(play_audio=true) **立刻开始**，中间间隔 ≤ 300ms
+- voice 留空段的 `start_ms` 和 `duration_ms` 必须和 video_clip **完全重合**（不是在视频之前）
+- 正确示例：
   ```
   voice: start_ms=8000, duration_ms=3000, text="来看看原视频"  → 结束于 11000ms
-  visual: start_ms=11000, type="video_clip", play_audio=true   → 紧接开始
-  voice: start_ms=11000, duration_ms=10000, text=""             → 留空让原声播放
+  visual: start_ms=11000, duration_ms=10000, type="video_clip", play_audio=true, time_range=[5, 15]
+  voice: start_ms=11000, duration_ms=10000, text=""  ← 和 video_clip 完全同步！
   ```
-- video_clip(play_audio=false) 的预览片段可以和 voice 并行，无此限制
+- ❌ 错误示例（留空在视频前）：
+  ```
+  voice: start_ms=11000, duration_ms=5000, text=""   ← 先留空 5 秒静音
+  visual: start_ms=16000, ...                        ← 视频才开始 → 5秒空白！
+  ```
+
+### 视频素材使用规则：
+- **时长**：优先完整播放素材视频（参考 `_video_duration_s`），如果视频超过 15 秒则截取最精彩的 8-15 秒片段
+- **数量**：每条有视频的新闻，建议安排 2 段视频：
+  1. 预览片段（play_audio=false, 5-8秒）：角色说正文时背景播放视频画面
+  2. 原声片段（play_audio=true）：角色闭嘴，让观众听原声。时长 = min(素材总时长, 15秒)
+- **截断处理**：time_range 的结束点应选在画面自然转场/停顿处，避免话说到一半被截断
+  - 参考 `_video_segments[]` 的分段时间点来选择自然截断位置
+  - 如果没有 segments 信息，尽量选 5 的整数倍秒数作为截断点
+- video_clip(play_audio=false) 的预览片段可以和 voice 并行，无时序限制
 
 
 ## ⚠️ 字段格式（严格遵守，不得更改字段名！）

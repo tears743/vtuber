@@ -67,7 +67,18 @@ def main():
     logger.info("[director] Phase 2a: 选题开始")
     logger.info("=" * 60)
     
-    selection = director.select_topics(collected_dir)
+    # 加载 manifest（用于过滤无素材的热搜）
+    manifest_path = data_root / today / "media" / "manifest.json"
+    manifest = None
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            logger.info(f"[director] 加载 manifest: {len(manifest)} 条素材")
+        except Exception as e:
+            logger.warning(f"[director] manifest 加载失败: {e}")
+    
+    selection = director.select_topics(collected_dir, manifest=manifest)
     
     # 保存选题结果
     selected_dir.mkdir(parents=True, exist_ok=True)

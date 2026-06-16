@@ -24,18 +24,27 @@ WORKER_PROMPTS = {
 Your task: Deep-collect the following Weibo topics. For each topic:
 1. Use `browser <session> open <url>` to open the topic page
 2. Use `browser <session> extract` to get page content
-3. Extract: post text, images URLs, top comments (user + text + likes)
-4. Save each topic immediately with `save_data`
+3. **CRITICAL: Extract image URLs** using:
+   `browser <session> eval "Array.from(document.querySelectorAll('img[src*=sinaimg]')).map(i=>i.src.replace(/\\/thumb\\d+\\/|orj\\d+\\/|mw\\d+\\//,'/large/')).filter(u=>u.includes('/large/'))"` 
+4. Extract: post text, top comments (user + text + likes)
+5. If search page has no images, open one of the top posts to extract images from detail page
+6. Save each topic immediately with `save_data`
 
 Topics to collect:
 {topics}
 
 ## Save format (JSON object per topic):
 - title, source ("weibo"), content (200+ chars), hot_value, url
-- visual_assets: {{images: [urls]}}
+- visual_assets: {{images: [url1, url2, ...]}}  ← 必须至少1张图！
 - top_comments: [{{user, text, likes}}] (3-5 per topic)
 - key_points: [3-5 bullet points]
 - media_type: "hot_topic|tech_news|funny"
+
+## Image extraction rules (VERY IMPORTANT):
+- visual_assets.images MUST contain at least 1 image URL
+- Prefer large images: replace /thumb150/, /orj360/, /mw690/ with /large/ in URL
+- Only include sinaimg.cn URLs (ignore icons, avatars, emojis)
+- If extract gives no images, use browser eval to query img tags directly
 
 ## Rules:
 - Use different session names for each topic (e.g. wb1, wb2, wb3)
@@ -46,24 +55,53 @@ Topics to collect:
 
     "douyin": """You are a Douyin deep-collection worker. Today is {date}.
 
-Your task: Deep-collect the following Douyin topics. For each topic:
-1. Use `douyin search "<keyword>" -f json --limit 5` to find videos
-2. If you need play_url, use `douyin user-videos <sec_uid> -f json --with_comments true`
-3. Save each topic immediately with `save_data`
+Your task: Deep-collect the following Douyin topics. For each topic, find relevant videos and extract details.
+
+## Available opencli douyin commands:
+```
+Usage: opencli douyin [command]
+
+Commands:
+  hashtag <action>       话题搜索 / AI推荐 / 热点词
+    actions: search, suggest, hot
+    options: --keyword [value], --limit [value], -f json
+    output columns: name, id, view_count
+
+  user-videos <sec_uid>  获取指定用户的视频列表（含下载地址和热门评论）
+    options: -f json
+
+  videos                 获取自己的作品列表
+    options: -f json
+```
+
+## Also available: browser commands
+- `browser <session> open <url>` - open a URL
+- `browser <session> extract` - extract page content
+- `browser <session> eval "<js>"` - execute JavaScript
+
+## Strategy:
+1. Use `douyin hashtag search --keyword "<topic keyword>" --limit 5 -f json` to find related hashtags
+2. Use `browser <session> open https://www.douyin.com/search/<keyword>` if hashtag search fails
+3. Extract video URLs from search results or page (format: https://www.douyin.com/video/XXXXX)
+4. Open the video page with browser to get details (title, comments, description)
+5. Save each topic immediately with `save_data`
 
 Topics to collect:
 {topics}
 
 ## Save format (JSON object per topic):
-- title, source ("douyin"), content (200+ chars), hot_value, url
-- visual_assets: {{video_url: "play_url if available"}}
+- title, source ("douyin"), content (200+ chars), hot_value, url (MUST be https://www.douyin.com/video/XXXXX format!)
+- visual_assets: {{video_url: "<same as url, the douyin video page URL>"}}
 - top_comments: [{{user, text, likes}}] (3-5 per topic)
 - key_points: [3-5 bullet points]
 - media_type: "hot_topic|tech_news|funny"
 
-## Rules:
-- If AUTH_REQUIRED, call notify_user
-- Save each topic immediately
+## CRITICAL Rules:
+- The `url` field MUST be a valid douyin video URL like https://www.douyin.com/video/7649231660986141994
+- visual_assets.video_url MUST also contain this URL (needed for video download later)
+- Use different session names (dy1, dy2, dy3...)
+- If a topic search fails after 2 attempts, skip it and move to the next topic
+- Save each topic immediately after collection, do NOT batch
 - Respond with a brief summary when done
 """,
 
@@ -107,7 +145,8 @@ Repos to collect:
 {topics}
 
 ## Save format (JSON object per repo):
-- title, source ("GitHub Trending"), content (500+ chars! Include README key sections), url
+- title, source ("github_trending"), content (500+ chars! Include README key sections), url (MUST be full GitHub repo URL like https://github.com/owner/repo)
+- visual_assets: {{readme_url: "<same repo url, signals download stage to fetch full README.md and images>"}}
 - key_points: [5-8 bullet points about what the project does, features, usage]
 - media_type: "tech_news"
 - technical_details: {{
@@ -120,6 +159,8 @@ Repos to collect:
 
 ## Rules:
 - Use different session names (gh1, gh2, gh3...)
+- source MUST be exactly "github_trending" (lowercase with underscore)
+- url MUST be the full repo URL (https://github.com/owner/repo)
 - content must be 500+ characters! Include README overview and key features
 - If README extraction fails, try alternative: `browser <session> eval "document.querySelector('.Box-body.px-5.pb-5')?.innerText?.substring(0, 5000)"`
 - Save each repo immediately
@@ -274,7 +315,8 @@ class PlatformWorker:
         
         # Get platform-specific prompt
         prompt_template = WORKER_PROMPTS.get(self.platform, WORKER_PROMPTS["weibo"])
-        system_prompt = prompt_template.format(date=today, topics=topics_text)
+        # Use replace instead of .format() to avoid KeyError when topics_text contains {curly braces}
+        system_prompt = prompt_template.replace("{date}", today).replace("{topics}", topics_text)
         
         messages = [
             {"role": "system", "content": system_prompt},

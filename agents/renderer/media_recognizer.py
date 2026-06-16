@@ -140,16 +140,72 @@ class MediaRecognizer:
             
             item["images"] = recognized_images
             
-            # 视频识别（获取时长）
-            video_path = item.get("video")
-            if video_path:
-                if isinstance(video_path, str):
-                    duration_s = self._get_video_duration(Path(video_path))
+            # 视频识别（时长 + 内容理解）
+            video_info = item.get("video")
+            if video_info:
+                if isinstance(video_info, str):
+                    video_path_str = video_info
+                elif isinstance(video_info, dict):
+                    video_path_str = video_info.get("path", "")
+                else:
+                    video_path_str = ""
+                
+                # 已有完整识别结果则跳过
+                already_done = (isinstance(video_info, dict) 
+                                and video_info.get("duration_s") 
+                                and video_info.get("summary"))
+                
+                if video_path_str and not already_done:
+                    video_path = Path(video_path_str)
+                    duration_s = self._get_video_duration(video_path)
+                    
+                    # 用 mimo 做视频内容理解
+                    video_understanding = self._summarize_video(video_path, duration_s)
+                    
                     item["video"] = {
-                        "path": video_path,
+                        "path": video_path_str,
                         "duration_s": duration_s,
+                        "summary": video_understanding.get("summary", ""),
+                        "transcript": video_understanding.get("transcript", ""),
+                        "key_moments": video_understanding.get("key_moments", []),
                         "requires_browser": "douyin" in source_file,
                     }
+            
+            # README 识别：图片识别 + 内容总结
+            readme_data = item.get("readme")
+            if readme_data and isinstance(readme_data, dict):
+                # 识别 README 中的图片
+                readme_images = readme_data.get("images", [])
+                recognized_readme_imgs = []
+                for img_path_str in readme_images:
+                    img_path = Path(img_path_str)
+                    if img_path.exists():
+                        quality = self._check_image_quality(img_path)
+                        if quality["usable"]:
+                            try:
+                                desc = self._recognize_image(img_path)
+                                recognized_readme_imgs.append({
+                                    "path": img_path_str,
+                                    "width": quality["width"],
+                                    "height": quality["height"],
+                                    "description": desc,
+                                })
+                            except Exception:
+                                pass
+                
+                if recognized_readme_imgs:
+                    readme_data["recognized_images"] = recognized_readme_imgs
+                
+                # 总结 README 内容
+                readme_path = Path(readme_data.get("path", ""))
+                if readme_path.exists() and not readme_data.get("summary"):
+                    try:
+                        readme_text = readme_path.read_text(encoding="utf-8")[:15000]
+                        summary = self._summarize_readme(readme_text)
+                        if summary:
+                            readme_data["summary"] = summary
+                    except Exception as e:
+                        logger.debug(f"[recognizer] README 总结失败: {e}")
         
         # 保存
         with open(manifest_path, "w", encoding="utf-8") as f:
@@ -249,4 +305,186 @@ class MediaRecognizer:
         except Exception:
             pass
         return None
+    
+    # Base64 上限: 50MB 编码后 → 原文件约 37MB
+    VIDEO_BASE64_MAX_BYTES = 37 * 1024 * 1024
+    
+    def _summarize_video(self, video_path: Path, duration_s: float | None = None) -> dict:
+        """
+        用 mimo-v2.5 做视频内容理解。
+        
+        限制:
+        - Base64 编码后不超过 50MB
+        - 格式: MP4/MOV/AVI/WMV
+        - fps: [0.1, 10], 默认 2
+        
+        Returns:
+            {"summary": "...", "transcript": "...", "key_moments": [...]}
+        """
+        if not video_path.exists():
+            return {}
+        
+        file_size = video_path.stat().st_size
+        
+        # 超过 37MB 需要压缩
+        actual_path = video_path
+        compressed = None
+        if file_size > self.VIDEO_BASE64_MAX_BYTES:
+            compressed = video_path.parent / f"{video_path.stem}_compressed.mp4"
+            try:
+                # 压缩到 720p + crf 28，控制在 37MB 以内
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(video_path),
+                     "-vf", "scale=-2:720", "-c:v", "libx264", "-crf", "28",
+                     "-c:a", "aac", "-b:a", "64k", str(compressed)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode == 0 and compressed.exists():
+                    if compressed.stat().st_size <= self.VIDEO_BASE64_MAX_BYTES:
+                        actual_path = compressed
+                        logger.info(f"[recognizer] 视频压缩: {file_size/1024/1024:.1f}MB -> {compressed.stat().st_size/1024/1024:.1f}MB")
+                    else:
+                        logger.warning(f"[recognizer] 压缩后仍超限，跳过视频理解")
+                        compressed.unlink(missing_ok=True)
+                        return {}
+                else:
+                    logger.warning(f"[recognizer] 视频压缩失败")
+                    return {}
+            except Exception as e:
+                logger.warning(f"[recognizer] 视频压缩异常: {e}")
+                return {}
+        
+        # 读取并 base64 编码
+        try:
+            with open(actual_path, "rb") as f:
+                video_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            logger.warning(f"[recognizer] 视频读取失败: {e}")
+            if compressed and compressed.exists():
+                compressed.unlink(missing_ok=True)
+            return {}
+        
+        # 根据时长选择 fps
+        if duration_s and duration_s > 30:
+            fps = 1  # 长视频降低帧率
+        else:
+            fps = 2  # 短视频用默认
+        
+        prompt = """你是一名专业的短视频内容分析师。请对这段视频进行详细分析，供短视频脚本编剧参考。
+
+请输出以下内容（JSON 格式）：
+{
+  "summary": "200-400字的视频内容总结，包含：主题是什么、画面展示了什么、传达了什么信息、情绪基调",
+  "transcript": "如果视频中有人说话/旁白/字幕，尽可能还原完整的文字内容。如果没有语音则输出空字符串",
+  "key_moments": [
+    {"time_s": 0, "description": "开头画面描述"},
+    {"time_s": 5, "description": "关键转折/重点画面"},
+    ...
+  ]
+}
+
+要求：
+- summary 要具体描述画面内容，不要笼统概括
+- transcript 优先还原口播/字幕文字，这对脚本编剧非常重要
+- key_moments 标注 3-5 个关键时间点和对应画面
+- 只输出 JSON，不要其他文字"""
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {
+                                "url": f"data:video/mp4;base64,{video_b64}"
+                            },
+                            "fps": fps,
+                            "media_resolution": "default",
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                }],
+                max_tokens=4096,
+                temperature=0.1,
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # 尝试解析 JSON
+            import re
+            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                logger.info(f"[recognizer] ✅ 视频理解: {video_path.name} ({len(parsed.get('summary',''))} chars)")
+                return parsed
+            else:
+                # 无法解析 JSON，把整段文本当 summary
+                logger.info(f"[recognizer] 视频理解(非JSON): {video_path.name}")
+                return {"summary": result_text[:1000], "transcript": "", "key_moments": []}
+            
+        except Exception as e:
+            logger.warning(f"[recognizer] 视频理解失败: {video_path.name}: {e}")
+            return {}
+        finally:
+            # 清理压缩临时文件
+            if compressed and compressed.exists():
+                compressed.unlink(missing_ok=True)
+    
+    def _summarize_readme(self, readme_text: str) -> str | None:
+        """
+        用 LLM 总结 README 内容，输出结构化摘要供 Director 使用。
+        """
+        prompt = """你是一名资深科技新闻编辑，擅长将开源项目提炼为观众感兴趣的科技新闻素材。请对以下 GitHub README 进行**详细的**结构化总结，供短视频脚本编剧参考。
+
+请包含以下维度（总共 500-1000 字，越详细越好）：
+
+1. 【一句话新闻标题】用新闻标题的方式概括为什么值得关注
+2. 【项目定位】面向非技术观众解释：这个项目是做什么的、解决了什么痛点、目标用户是谁
+3. 【核心功能详解】逐条列出 3-5 个最吸引人的功能：
+   - 每个功能要说清楚具体做了什么、怎么做的
+   - 如果有性能对比或 benchmark 数据，必须提取出具体数字
+   - 说明这个功能对用户的实际价值
+4. 【技术架构】
+   - 技术栈（语言、框架、依赖的模型等）
+   - 核心算法或方法论（如果 README 有提及）
+   - 部署方式（本地/云端/Docker/pip install）
+   - 支持的平台和环境
+5. 【数据与性能】
+   - Star 数、Fork 数、下载量等社区数据
+   - 性能 benchmark（速度、准确率、资源占用等）
+   - 支持的模型规模（参数量、训练数据量）
+   - 对比竞品的优势数据
+6. 【使用场景举例】2-3 个具体的使用场景，让观众能联想到自己的需求
+7. 【为什么值得关注】结合当前 AI/技术趋势分析热门原因
+
+格式要求：
+- 使用自然段落形式输出，每个维度可以用【】标记开头
+- 所有数字、数据必须精确引用自 README 原文，不要编造
+- 如果某个维度 README 没有提及，可以跳过
+- 输出中文
+- 如果 README 内容不足以总结，输出"内容不足\""""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": f"{prompt}\n\n---\n\n{readme_text}"},
+                ],
+                max_tokens=10000,
+                temperature=0.2,
+            )
+            
+            result = response.choices[0].message.content.strip()
+            if result and "内容不足" not in result:
+                return result
+            return None
+            
+        except Exception as e:
+            logger.debug(f"[recognizer] README 总结 LLM 调用失败: {e}")
+            return None
 

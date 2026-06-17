@@ -798,15 +798,14 @@ class DirectorAgent:
 """ + persona + """
 
 ## 聚合视频结构
-这是一个**多段新闻聚合**视频，每条新闻是一个段落（最长 30 秒），段落之间有过渡转场。
+这是一个**多段新闻聚合**视频，每条新闻是一个段落，段落之间有过渡转场。
 
 ### 段落结构模板：
 1. 过渡转场（2-3秒）：overlay 显示 highlight_text + 角色说过渡语
-2. 正文（15-25秒）：角色吐槽 + 素材展示
-3. （如有视频）视频原声片段（5-10秒）：角色闭嘴
+2. 正文：角色吐槽 + 素材展示
+3. （如有视频）视频原声片段：角色闭嘴，完整播放视频原声
 
 ### 关键规则：
-- 每条新闻段落控制在 30 秒内
 - 段落间用 overlay 的 `highlight_text` 做转场卡片（如"第3条"、"接下来"）
 - voice 轨的过渡语要自然（"下一个更离谱..."、"接着看这个..."）
 - **开场必须用 `sp_thumbs_up` 动作**（9.2秒），配合"家人们先点个赞/关注一下"等点赞引导话术
@@ -829,14 +828,10 @@ class DirectorAgent:
   ```
 
 ### 视频素材使用规则：
-- **时长**：优先完整播放素材视频（参考 `_video_duration_s`），如果视频超过 15 秒则截取最精彩的 8-15 秒片段
-- **数量**：每条有视频的新闻，建议安排 2 段视频：
-  1. 预览片段（play_audio=false, 5-8秒）：角色说正文时背景播放视频画面
-  2. 原声片段（play_audio=true）：角色闭嘴，让观众听原声。时长 = min(素材总时长, 15秒)
-- **截断处理**：time_range 的结束点应选在画面自然转场/停顿处，避免话说到一半被截断
-  - 参考 `_video_segments[]` 的分段时间点来选择自然截断位置
-  - 如果没有 segments 信息，尽量选 5 的整数倍秒数作为截断点
-- video_clip(play_audio=false) 的预览片段可以和 voice 并行，无时序限制
+- play_audio=true 的原声片段：完整播放，`time_range = [0, _video_duration_s]`，`duration_ms = _video_duration_s * 1000`
+- play_audio=false 的预览片段：取前 5-8 秒，`time_range = [0, 5]`
+- 每条有视频的新闻安排 2 段：先预览（说正文时播画面），再原声（角色闭嘴听原声）
+- video_clip(play_audio=false) 可以和 voice 并行
 
 
 ## ⚠️ 字段格式（严格遵守，不得更改字段名！）
@@ -857,8 +852,8 @@ class DirectorAgent:
 - 建议：大部分用表情类，关键节点用动作类，高潮/结尾用特殊动作
 
 ### visual 轨条目格式（三种类型）：
-1. 图片：`{"start_ms": 0, "duration_ms": 5000, "type": "image", "source": "真实文件路径"}`
-2. 视频片段：`{"start_ms": 0, "duration_ms": 8000, "type": "video_clip", "source": "真实文件路径", "time_range": [0, 8], "play_audio": true}`
+1. 图片：`{"start_ms": 0, "duration_ms": 5000, "type": "image", "source": "IMG01_01"}`
+2. 视频片段：`{"start_ms": 0, "duration_ms": 8000, "type": "video_clip", "source": "V01", "time_range": [0, 8], "play_audio": true}`
 3. Remotion 组件：`{"start_ms": 0, "duration_ms": 12000, "type": "remotion", "component": "组件名", "props": {"position": "top", ...}}`
    - **position 字段必须**：`"top"`（默认，组件在上半区）、`"center"`（居中）、`"bottom"`（下半区）
    - 由于 Live2D 角色在画面下方，remotion 组件默认用 `"top"` 避免遮挡

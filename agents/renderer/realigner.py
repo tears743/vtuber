@@ -10,10 +10,26 @@ Step 2: Timeline Realigner - 用实际音频时长修正脚本时间线
 """
 import json
 import logging
+import subprocess
 from pathlib import Path
 from copy import deepcopy
 
 logger = logging.getLogger(__name__)
+
+
+def _get_video_duration_ms(path: Path) -> int | None:
+    """用 ffprobe 获取视频时长（毫秒）"""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(float(result.stdout.strip()) * 1000)
+    except Exception:
+        pass
+    return None
 
 
 def realign_timeline(script: dict, audio_durations: dict[int, int]) -> dict:
@@ -57,12 +73,30 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
     visual_items = tracks.get("visual", [])
     script_id = aligned.get("id", "unknown")
     
-    # 收集 play_audio 段（原始时间）
+    # 收集 play_audio 段（原始时间），并用源视频实际时长修正 duration
     play_audio_ranges = []
     for vitem in visual_items:
         if vitem.get("type") == "video_clip" and vitem.get("play_audio"):
             pa_start = vitem.get("start_ms", 0)
             pa_dur = vitem.get("duration_ms", 0)
+            
+            # 用 ffprobe 读取源视频实际时长，确保完整播放
+            source = vitem.get("source", "")
+            if source and Path(source).exists():
+                actual_dur_ms = _get_video_duration_ms(Path(source))
+                if actual_dur_ms:
+                    time_range = vitem.get("time_range", [0])
+                    range_start_ms = int((time_range[0] if time_range else 0) * 1000)
+                    # 从 range_start 到视频末尾的可用时长
+                    available_ms = max(0, actual_dur_ms - range_start_ms)
+                    if available_ms > pa_dur:
+                        old_dur = pa_dur
+                        pa_dur = available_ms
+                        range_end = range_start_ms / 1000.0 + pa_dur / 1000.0
+                        vitem["duration_ms"] = pa_dur
+                        vitem["time_range"] = [time_range[0] if time_range else 0, range_end]
+                        logger.info(f"[realigner] 视频原声扩展: {old_dur}ms -> {pa_dur}ms ({Path(source).parent.name})")
+            
             play_audio_ranges.append((pa_start, pa_start + pa_dur, pa_dur))
     play_audio_ranges.sort(key=lambda x: x[0])
     

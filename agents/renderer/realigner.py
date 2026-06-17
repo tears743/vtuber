@@ -246,13 +246,62 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
                 item["duration_ms"] = pa_timing[pa_idx][1]
             pa_idx += 1
     
-    # 其他 visual/overlay/background 用 map_time
-    for track_name in ("visual", "overlay", "background"):
+    # 其他 visual items：按原始顺序重排，填充 PA 片段之间的空隙
+    # 先收集 PA 的精确时间窗口（已定位）
+    pa_windows = []  # [(start, end)]
+    for item in visual_items:
+        if item.get("type") == "video_clip" and item.get("play_audio"):
+            pa_windows.append((item["start_ms"], item["start_ms"] + item["duration_ms"]))
+    pa_windows.sort(key=lambda x: x[0])
+    
+    # 非 PA visual items 按原始顺序收集
+    non_pa_visuals = []
+    for item in visual_items:
+        if not (item.get("type") == "video_clip" and item.get("play_audio")):
+            non_pa_visuals.append(item)
+    
+    # 按原始 start_ms 排序非 PA items
+    non_pa_visuals.sort(key=lambda x: x.get("start_ms", 0))
+    
+    # 找到每个非 PA item 属于哪个 PA 的"前导"（紧挨在 PA 之前的段落）
+    # 策略：按顺序放置，遇到 PA 窗口就跳过
+    cursor = 0  # 当前可用起始时间
+    pa_idx_cursor = 0  # 下一个要跳过的 PA 窗口
+    
+    for item in non_pa_visuals:
+        old_dur = item.get("duration_ms", 0)
+        
+        # 检查当前 cursor 是否落入某个 PA 窗口内
+        while pa_idx_cursor < len(pa_windows):
+            pa_start, pa_end = pa_windows[pa_idx_cursor]
+            if cursor >= pa_end:
+                # 已经过了这个 PA 窗口
+                pa_idx_cursor += 1
+            elif cursor >= pa_start:
+                # cursor 在 PA 窗口内，跳到 PA 结束后
+                cursor = pa_end
+                pa_idx_cursor += 1
+            elif cursor + old_dur > pa_start:
+                # item 会和 PA 重叠，缩短或放在 PA 之前
+                available = pa_start - cursor
+                if available >= 1000:  # 至少 1 秒可用
+                    old_dur = available
+                    break
+                else:
+                    # 放到 PA 后面
+                    cursor = pa_end
+                    pa_idx_cursor += 1
+            else:
+                break
+        
+        item["start_ms"] = cursor
+        item["duration_ms"] = max(old_dur, 100)
+        cursor += item["duration_ms"]
+    
+    # overlay/background 轨用 map_time
+    for track_name in ("overlay", "background"):
         items = tracks.get(track_name, [])
         for item in items:
-            # play_audio 的 visual 已经精确定位了，跳过
-            if item.get("type") == "video_clip" and item.get("play_audio"):
-                continue
             old_start = item.get("start_ms", 0)
             old_dur = item.get("duration_ms", 0)
             old_end = old_start + old_dur
@@ -280,6 +329,9 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
         f"{old_total}ms -> {max_end}ms "
         f"({changes} voice items adjusted, delta: {max_end - old_total:+d}ms)"
     )
+    
+    # Step 4: 排序 visual 轨确保按时间顺序
+    tracks["visual"] = sorted(tracks.get("visual", []), key=lambda x: x.get("start_ms", 0))
     
     return aligned
 

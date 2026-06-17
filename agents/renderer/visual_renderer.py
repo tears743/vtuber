@@ -524,25 +524,7 @@ def render_script_visual(
         if item_type == "image":
             result = render_visual_image(item, seg_path)
         elif item_type == "video_clip":
-            # play_audio 视频由 compose 直接处理，visual 层只生成黑场占位
-            if item.get("play_audio"):
-                result = _generate_black_segment(
-                    item.get("duration_ms", 5000),
-                    seg_path.with_suffix(".ts"),
-                    bg_color="0x0f0f23",
-                )
-                if result:
-                    # 转成 mp4 供 concat 使用
-                    mp4_cmd = [
-                        "ffmpeg", "-y", "-i", str(result),
-                        "-c:v", "libx264", "-preset", "ultrafast",
-                        "-r", "30", "-an", str(seg_path),
-                    ]
-                    subprocess.run(mp4_cmd, capture_output=True, timeout=30)
-                    result.unlink(missing_ok=True)
-                    result = seg_path if seg_path.exists() else None
-            else:
-                result = render_visual_video_clip(item, seg_path)
+            result = render_visual_video_clip(item, seg_path)
         elif item_type == "remotion":
             # 单个 remotion 片段 → 小的 Remotion 渲染
             mini_script = {

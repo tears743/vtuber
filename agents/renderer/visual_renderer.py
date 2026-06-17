@@ -266,12 +266,14 @@ def render_visual_video_clip(
     ]
 
     # 处理 mute_ranges（静音某些片段） - 暂不实现
+    # 动态超时：基于视频时长
+    dynamic_timeout = max(timeout, int(duration_s) + 60)
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=dynamic_timeout,
             encoding="utf-8",
             errors="replace",
         )
@@ -372,9 +374,23 @@ def concat_visual_segments(
             str(ts_path),
         ]
         try:
+            # 动态超时：基于源文件可能的时长
+            seg_timeout = max(60, int((segments_sorted[idx][0] + 500000 - start_ms) / 1000) + 60)
+            # 先用 ffprobe 获取源片段时长
+            try:
+                probe_dur = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "csv=p=0", str(seg_path)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                seg_dur_s = float(probe_dur.stdout.strip())
+                seg_timeout = max(60, int(seg_dur_s) + 60)
+            except Exception:
+                pass
+            
             subprocess.run(
                 ts_cmd, capture_output=True, text=True,
-                timeout=60, encoding="utf-8", errors="replace",
+                timeout=seg_timeout, encoding="utf-8", errors="replace",
             )
             if ts_path.exists() and ts_path.stat().st_size > 0:
                 ts_files.append(ts_path)

@@ -236,6 +236,15 @@ def render_visual_video_clip(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     start_s = time_range[0] if isinstance(time_range, list) and len(time_range) > 0 else 0
+    
+    # 如果 time_range 指定了结束时间，用它来限制 duration
+    if isinstance(time_range, list) and len(time_range) >= 2:
+        range_dur = time_range[1] - time_range[0]
+        duration_s = min(duration_s, range_dur)
+    
+    # fade 参数
+    fade_in = 0.3
+    fade_out_start = max(0, duration_s - 0.5)
 
     cmd = [
         "ffmpeg", "-y",
@@ -245,6 +254,8 @@ def render_visual_video_clip(
         "-vf", (
             "scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,"
+            f"fade=t=in:st=0:d={fade_in},"
+            f"fade=t=out:st={fade_out_start}:d=0.5,"
             "format=yuv420p"
         ),
         "-c:v", "libx264",

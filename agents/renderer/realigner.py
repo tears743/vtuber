@@ -89,6 +89,18 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
     # 按原始 start_ms 排序
     events.sort(key=lambda e: e[2])
     
+    # 识别空 voice 段（text=""）并标记为 pa 的"伴随"段
+    # 空 voice 段紧邻 pa 时，不独立占用时间，而是和 pa 共享时间窗口
+    empty_voice_for_pa = set()  # voice indices that are silent slots for play_audio
+    for ei in range(len(events) - 1):
+        evt = events[ei]
+        nxt = events[ei + 1]
+        if (evt[0] == "voice" and nxt[0] == "pa"):
+            voice_idx = evt[1]
+            voice_text = voice_items[voice_idx].get("text", "").strip()
+            if not voice_text:
+                empty_voice_for_pa.add(voice_idx)
+    
     # 顺序放置事件
     current_ms = events[0][2] if events else 0  # 第一个事件的原始起始
     voice_timing = {}  # {voice_index: (new_start, new_dur)}
@@ -100,6 +112,10 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
         
         if evt_type == "voice":
             idx, old_start, old_dur, new_dur = evt[1], evt[2], evt[3], evt[4]
+            
+            # 空 voice 段（伴随 pa）：跳过，稍后和 pa 同步
+            if idx in empty_voice_for_pa:
+                continue
             
             # voice 之间加 300ms 间隔
             if time_shifts:
@@ -118,12 +134,22 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
         elif evt_type == "pa":
             pi, old_start, old_dur = evt[1], evt[2], evt[3]
             
-            # play_audio 前加 200ms 间隔
+            # play_audio 紧接前一个 voice（仅 200ms 间隔）
             if time_shifts:
                 current_ms = max(current_ms, time_shifts[-1][3] + 200)
             
             pa_timing[pi] = (current_ms, old_dur)
             time_shifts.append((old_start, old_start + old_dur, current_ms, current_ms + old_dur))
+            
+            # 同步设置伴随的空 voice 段（和 pa 完全重合）
+            for ei2 in range(len(events) - 1):
+                if events[ei2][0] == "voice" and events[ei2][1] in empty_voice_for_pa:
+                    if ei2 + 1 < len(events) and events[ei2 + 1][0] == "pa" and events[ei2 + 1][1] == pi:
+                        vidx = events[ei2][1]
+                        voice_timing[vidx] = (current_ms, old_dur)
+                        voice_items[vidx]["start_ms"] = current_ms
+                        voice_items[vidx]["duration_ms"] = old_dur
+                        break
             
             current_ms += old_dur
     

@@ -57,11 +57,13 @@ class VoxCPMTTS:
         dialect: str = "四川话",
         cfg_value: float = 3.0,
         inference_timesteps: int = 32,
+        speed: str = "快",
     ):
         self.url = url.rstrip("/")
         self.dialect = dialect
         self.cfg_value = cfg_value
         self.inference_timesteps = inference_timesteps
+        self.speed = speed  # "快"/"慢"/"正常"
     
     def check_health(self) -> bool:
         """检查 TTS 服务是否可用"""
@@ -97,7 +99,10 @@ class VoxCPMTTS:
         }
         
         if self.dialect:
-            payload["control_instruction"] = self.dialect
+            ctrl = self.dialect
+            if self.speed and self.speed != "正常":
+                ctrl += f"，语速{self.speed}一点"
+            payload["control_instruction"] = ctrl
         
         logger.info(f"[tts] 合成: '{cleaned[:40]}...' -> {output_path.name}")
         
@@ -181,3 +186,30 @@ class VoxCPMTTS:
             wf.setsampwidth(2)
             wf.setframerate(sample_rate)
             wf.writeframes(b'\x00\x00' * num_samples)
+
+    def _apply_speed(self, wav_path: Path) -> Path:
+        """用 FFmpeg atempo 加速音频"""
+        import subprocess
+        tmp_path = wav_path.with_suffix(".tmp.wav")
+        cmd = [
+            "ffmpeg", "-y", "-i", str(wav_path),
+            "-filter:a", f"atempo={self.speed}",
+            "-ac", "1", "-ar", "24000",
+            str(tmp_path),
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=30, encoding="utf-8", errors="replace",
+            )
+            if result.returncode == 0:
+                tmp_path.replace(wav_path)
+            else:
+                logger.warning(f"[tts] atempo失败: {result.stderr[:100]}")
+                if tmp_path.exists():
+                    tmp_path.unlink()
+        except Exception as e:
+            logger.warning(f"[tts] atempo异常: {e}")
+            if tmp_path.exists():
+                tmp_path.unlink()
+        return wav_path

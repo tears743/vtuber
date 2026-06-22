@@ -25,7 +25,7 @@ Write-Host " Skip Director: $SkipDirector" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
-$steps = @("collect", "director", "tts", "align", "overlay", "visual", "live2d", "compose")
+$steps = @("collect", "download", "recognize", "director", "tts", "align", "overlay", "visual", "live2d", "compose")
 $startIdx = [Array]::IndexOf($steps, $From)
 if ($startIdx -lt 0) {
     Write-Host "[ERROR] Unknown step: $From" -ForegroundColor Red
@@ -49,14 +49,16 @@ for ($i = $startIdx; $i -lt $steps.Count; $i++) {
     }
 
     $descTable = @{
-        "collect"  = "Collect - data gathering"
-        "director" = "Director - script generation"
-        "tts"      = "TTS - voice synthesis"
-        "align"    = "Align - timeline alignment"
-        "overlay"  = "Overlay - transparent cards"
-        "visual"   = "Visual - background layer"
-        "live2d"   = "Live2D - character animation"
-        "compose"  = "Compose - final mix"
+        "collect"   = "Collect - data gathering"
+        "download"  = "Download - media download"
+        "recognize" = "Recognize - image/video recognition"
+        "director"  = "Director - script generation"
+        "tts"       = "TTS - voice synthesis"
+        "align"     = "Align - timeline alignment"
+        "overlay"   = "Overlay - transparent cards"
+        "visual"    = "Visual - background layer"
+        "live2d"    = "Live2D - character animation"
+        "compose"   = "Compose - final mix"
     }
     $desc = $descTable[$step]
 
@@ -65,6 +67,10 @@ for ($i = $startIdx; $i -lt $steps.Count; $i++) {
 
     if ($step -eq "collect") {
         python -m agents.collector.run_teams --date $Date
+    } elseif ($step -eq "download") {
+        python -m agents.renderer.run_render --date $Date --step download
+    } elseif ($step -eq "recognize") {
+        python -m agents.renderer.run_render --date $Date --step recognize
     } elseif ($step -eq "director") {
         python -m agents.director.run_director --date $Date
     } elseif ($step -eq "tts") {

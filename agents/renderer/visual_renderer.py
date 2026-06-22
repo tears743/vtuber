@@ -236,6 +236,15 @@ def render_visual_video_clip(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     start_s = time_range[0] if isinstance(time_range, list) and len(time_range) > 0 else 0
+    
+    # 如果 time_range 指定了结束时间，用它来限制 duration
+    if isinstance(time_range, list) and len(time_range) >= 2:
+        range_dur = time_range[1] - time_range[0]
+        duration_s = min(duration_s, range_dur)
+    
+    # fade 参数
+    fade_in = 0.3
+    fade_out_start = max(0, duration_s - 0.5)
 
     cmd = [
         "ffmpeg", "-y",
@@ -245,6 +254,8 @@ def render_visual_video_clip(
         "-vf", (
             "scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,"
+            f"fade=t=in:st=0:d={fade_in},"
+            f"fade=t=out:st={fade_out_start}:d=0.5,"
             "format=yuv420p"
         ),
         "-c:v", "libx264",
@@ -255,12 +266,14 @@ def render_visual_video_clip(
     ]
 
     # 处理 mute_ranges（静音某些片段） - 暂不实现
+    # 动态超时：基于视频时长
+    dynamic_timeout = max(timeout, int(duration_s) + 60)
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=dynamic_timeout,
             encoding="utf-8",
             errors="replace",
         )
@@ -361,9 +374,23 @@ def concat_visual_segments(
             str(ts_path),
         ]
         try:
+            # 动态超时：基于源文件可能的时长
+            seg_timeout = max(60, int((segments_sorted[idx][0] + 500000 - start_ms) / 1000) + 60)
+            # 先用 ffprobe 获取源片段时长
+            try:
+                probe_dur = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "csv=p=0", str(seg_path)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                seg_dur_s = float(probe_dur.stdout.strip())
+                seg_timeout = max(60, int(seg_dur_s) + 60)
+            except Exception:
+                pass
+            
             subprocess.run(
                 ts_cmd, capture_output=True, text=True,
-                timeout=60, encoding="utf-8", errors="replace",
+                timeout=seg_timeout, encoding="utf-8", errors="replace",
             )
             if ts_path.exists() and ts_path.stat().st_size > 0:
                 ts_files.append(ts_path)
@@ -480,13 +507,9 @@ def render_script_visual(
     types = set(v.get("type") for v in visual_items)
 
     if types == {"remotion"}:
-        # 全部 remotion → 直接整体渲染
-        output_path = output_dir / f"{script_id}_visual.mp4"
-        # 更新 script 用过滤后的 items
-        filtered_script = dict(script)
-        filtered_script["tracks"] = dict(tracks)
-        filtered_script["tracks"]["visual"] = visual_items
-        return render_visual_remotion(filtered_script, output_path)
+        # 全部 remotion → 已合并到 overlay 渲染，无需单独生成 visual.mp4
+        logger.info(f"[visual] {script_id}: 全 remotion，已合并到 overlay，跳过")
+        return None
 
     # 混合类型 → 分段处理
     segments = []

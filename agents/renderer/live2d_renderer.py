@@ -303,10 +303,29 @@ def step_live2d(date_str: str, max_workers: int = 2):
         for script in scripts:
             script_id = script["id"]
             out_file = output_dir / f"{script_id}_live2d.webm"
+            
+            # 检查已有文件时长是否匹配当前脚本
             if out_file.exists():
-                skip += 1
-                logger.info(f"[live2d] ⏭️ 已存在: {script_id}")
-                continue
+                expected_ms = script.get("total_duration_ms", 30000)
+                expected_s = expected_ms / 1000.0
+                try:
+                    probe = subprocess.run(
+                        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                         "-of", "csv=p=0", str(out_file)],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    actual_s = float(probe.stdout.strip()) if probe.returncode == 0 else 0
+                except Exception:
+                    actual_s = 0
+                
+                # 允许 2 秒误差
+                if abs(actual_s - expected_s) <= 2.0:
+                    skip += 1
+                    logger.info(f"[live2d] ⏭️ 已存在: {script_id} ({actual_s:.1f}s)")
+                    continue
+                else:
+                    logger.info(f"[live2d] 🔄 时长不匹配 ({actual_s:.1f}s vs {expected_s:.1f}s), 重渲: {script_id}")
+                    out_file.unlink()
 
             future = executor.submit(
                 render_live2d, script, audio_dir, output_dir

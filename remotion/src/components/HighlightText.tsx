@@ -57,7 +57,10 @@ export const HighlightText: React.FC<HighlightTextProps> = ({
       style={{
         justifyContent,
         alignItems: "center",
-        padding: "0 60px",
+        paddingTop: position === "top" ? 120 : 0,
+        paddingBottom: position === "bottom" ? 80 : 0,
+        paddingLeft: 60,
+        paddingRight: 60,
         fontFamily: t.fontFamily,
         opacity: fadeOut,
       }}

@@ -2,6 +2,7 @@ import { Composition } from "remotion";
 import { OverlayComposition } from "./Composition";
 import { VisualComposition } from "./VisualComposition";
 import { Live2DComposition } from "./Live2DComposition";
+import { MeteorOverlay } from "./MeteorOverlay";
 
 export const RemotionRoot: React.FC = () => {
   return (
@@ -43,6 +44,14 @@ export const RemotionRoot: React.FC = () => {
           offsetX: 0,
           offsetY: 0,
         }}
+      />
+      <Composition
+        id="MeteorFx"
+        component={MeteorOverlay}
+        durationInFrames={30 * 10}
+        fps={30}
+        width={1080}
+        height={1920}
       />
     </>
   );

@@ -41,7 +41,55 @@ def render_overlay(
         输出文件路径，或 None（渲染失败）
     """
     tracks = script.get("tracks", {})
-    overlay_items = tracks.get("overlay", [])
+    overlay_items = list(tracks.get("overlay", []))
+
+    # 合并 visual 轨中 type=remotion 的条目（stats_card/code_scroll/info_panel 等）
+    # 通过时间碰撞检测避免重复：如果 overlay 轨已有同时间段的组件则跳过
+    visual_items = tracks.get("visual", [])
+
+    # 构建 overlay 轨已有时间区间集合
+    existing_intervals = []
+    for ov in overlay_items:
+        s = ov.get("start_ms", 0)
+        e = s + ov.get("duration_ms", 0)
+        existing_intervals.append((s, e))
+
+    def _overlaps_existing(start_ms: int, duration_ms: int) -> bool:
+        """检查是否与已有 overlay 时间区间重叠"""
+        end_ms = start_ms + duration_ms
+        for (es, ee) in existing_intervals:
+            if start_ms < ee and end_ms > es:
+                return True
+        return False
+
+    for vis in visual_items:
+        if vis.get("type") == "remotion" and vis.get("component"):
+            vis_start = vis.get("start_ms", 0)
+            vis_dur = vis.get("duration_ms", 5000)
+            # 跳过与 overlay 轨已有条目时间重叠的 visual remotion 组件
+            if _overlaps_existing(vis_start, vis_dur):
+                logger.debug(
+                    f"[remotion] 跳过 visual 轨 {vis['component']} "
+                    f"({vis_start}ms) — 与 overlay 轨时间冲突"
+                )
+                continue
+            # 转换为 overlay 格式: component → type
+            overlay_item = {
+                "start_ms": vis_start,
+                "duration_ms": vis_dur,
+                "type": vis["component"],
+                "props": vis.get("props", {}),
+                "style": vis.get("style"),
+                "scale": vis.get("scale"),
+                "position": vis.get("props", {}).get("position"),
+                "offsetX": vis.get("offsetX"),
+                "offsetY": vis.get("offsetY"),
+            }
+            # 移除 None 值
+            overlay_item = {k: v for k, v in overlay_item.items() if v is not None}
+            overlay_items.append(overlay_item)
+            # 更新区间集合
+            existing_intervals.append((vis_start, vis_start + vis_dur))
 
     if not overlay_items:
         logger.info("[remotion] 无 overlay 轨，跳过渲染")
@@ -49,6 +97,11 @@ def render_overlay(
 
     total_ms = script.get("total_duration_ms", 30000)
     total_frames = ms_to_frames(total_ms)
+
+    # 碰撞检测 & 自动修正
+    from agents.renderer.layout_validator import LayoutValidator
+    validator = LayoutValidator()
+    overlay_items = validator.validate_and_fix(overlay_items)
 
     # 构建 inputProps，写入临时文件（Windows 命令行引号转义有问题）
     input_props = {

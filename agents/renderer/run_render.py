@@ -108,6 +108,7 @@ def step_tts(config: dict, today: str, data_root: Path):
     tts = VoxCPMTTS(
         url=tts_cfg.get("url", "http://127.0.0.1:8808"),
         dialect=tts_cfg.get("dialect", "四川话"),
+        speed=tts_cfg.get("speed", "快"),
     )
     
     # 检查服务
@@ -284,19 +285,16 @@ def step_live2d(config: dict, today: str, data_root: Path):
 
 
 def step_compose(config: dict, today: str, data_root: Path):
-    """Step 4: 最终合成 (FFmpeg)
+    """Step 4: 最终合成 (FFmpeg) — 演播室模式 + 素材转场
 
-    合成层级 (从底到顶):
-        1. visual（图片/视频素材渲染 — 底层）或纯色背景
-        2. live2d（Live2D 透明 WebM — 右下角角色）
-        3. overlay（Remotion WebM — 弹幕/数据卡片等）
-        4. audio（TTS 语音，多段 WAV 合并）
-
-    关键: VP9 alpha WebM 必须用 -vcodec libvpx-vp9 解码才能获取 alpha 通道
+    合成模式:
+        - 演播室模式（默认）: studio_bg + live2d居中 + desk前景 + ticker + 顶部bar + overlay
+        - 素材模式（image/video_clip）: 全屏素材 + live2d缩到角落 + overlay
+        - 两种模式之间有 0.5s fade 转场
     """
     import subprocess
 
-    logger.info("[render] Step 4: 最终合成")
+    logger.info("[render] Step 4: 最终合成 (演播室模式)")
 
     scripts_dir = data_root / today / "scripts_aligned"
     overlay_dir = data_root / today / "overlay"
@@ -305,6 +303,18 @@ def step_compose(config: dict, today: str, data_root: Path):
     visual_dir = data_root / today / "visual"
     output_dir = data_root / today / "final"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 演播室素材路径
+    project_root = Path(__file__).parent.parent.parent
+    studio_bg = project_root / "assets" / "studio" / "bg_starry.png"
+    studio_desk = project_root / "assets" / "studio" / "desk_foreground.png"
+
+    if not studio_bg.exists():
+        logger.error(f"[compose] 演播室背景不存在: {studio_bg}")
+        return
+    if not studio_desk.exists():
+        logger.error(f"[compose] 演播台前景不存在: {studio_desk}")
+        return
 
     script_files = sorted(scripts_dir.glob("*.json"))
     if not script_files:
@@ -327,175 +337,55 @@ def step_compose(config: dict, today: str, data_root: Path):
 
         logger.info(f"[compose] 合成: {script_id}")
 
-        # 查找各轨文件
-        visual_mp4 = visual_dir / f"{script_id}_visual.mp4"
         live2d_webm = live2d_dir / f"{script_id}_live2d.webm"
         overlay_webm = overlay_dir / f"{script_id}_overlay.webm"
 
-        # 合并多段 TTS 音频
+        # 合并 TTS 音频
         audio_seg_dir = audio_dir / script_id
         merged_audio = _merge_audio_segments(audio_seg_dir, script, output_dir / f"{script_id}_audio.wav")
 
         total_ms = script.get("total_duration_ms", 30000)
         duration_s = total_ms / 1000.0
 
-        # 从脚本中提取 video_clip 的原声信息（play_audio: true）
+        # 分析 visual 轨，找出素材段 (image/video_clip)
         tracks = script.get("tracks", {})
         visual_items = tracks.get("visual", [])
-        video_clips_with_audio = [
-            v for v in visual_items
-            if v.get("type") == "video_clip" and v.get("play_audio") and v.get("source")
-            and Path(v["source"]).exists()
-        ]
+        media_segments = []
+
+
+        for vis in visual_items:
+            vtype = vis.get("type", "")
+            if vtype in ("image", "video_clip"):
+                start_ms = vis.get("start_ms", 0)
+                dur_ms = vis.get("duration_ms", 5000)
+                source = vis.get("source", "")
+                if source and Path(source).exists():
+                    media_segments.append({
+                        "start_s": start_ms / 1000.0,
+                        "end_s": (start_ms + dur_ms) / 1000.0,
+                        "type": vtype,
+                        "source": source,
+                        "play_audio": vis.get("play_audio", False),
+                        "time_range": vis.get("time_range", []),
+                    })
 
         # 构建 FFmpeg 命令
-        cmd = ["ffmpeg", "-y"]
-        input_idx = 0
+        result = _compose_studio(
+            studio_bg=studio_bg,
+            studio_desk=studio_desk,
+            live2d_webm=live2d_webm,
+            overlay_webm=overlay_webm,
 
-        # Input 0: 视频底层 (visual 或纯色背景)
-        if visual_mp4.exists():
-            cmd.extend(["-i", str(visual_mp4)])
-        else:
-            # 深色纯色背景
-            cmd.extend(["-f", "lavfi", "-i",
-                        f"color=c=0x0f0f23:s=1080x1920:d={duration_s}:r=30"])
-        input_idx += 1
+            merged_audio=merged_audio,
+            media_segments=media_segments,
+            duration_s=duration_s,
+            output_mp4=output_mp4,
+            script_id=script_id,
+            today=today,
+        )
 
-        # Input 1: Live2D WebM (VP9 alpha)
-        has_live2d = live2d_webm.exists()
-        if has_live2d:
-            cmd.extend(["-vcodec", "libvpx-vp9", "-i", str(live2d_webm)])
-            input_idx += 1
-
-        # Input 2: Overlay WebM (VP9 alpha)
-        has_overlay = overlay_webm.exists()
-        if has_overlay:
-            cmd.extend(["-vcodec", "libvpx-vp9", "-i", str(overlay_webm)])
-            input_idx += 1
-
-        # Input 3: TTS Audio
-        has_audio = merged_audio is not None and merged_audio.exists()
-        if has_audio:
-            cmd.extend(["-i", str(merged_audio)])
-            audio_idx = input_idx
-            input_idx += 1
-
-        # Input 4+: video_clip 原声源文件
-        clip_inputs = []
-        for clip in video_clips_with_audio:
-            source = clip["source"]
-            time_range = clip.get("time_range", [0, clip.get("duration_ms", 5000) / 1000])
-            start_s = time_range[0] if isinstance(time_range, list) and len(time_range) > 0 else 0
-            dur_s = clip.get("duration_ms", 5000) / 1000.0
-
-            cmd.extend(["-ss", str(start_s), "-t", str(dur_s), "-i", str(source)])
-            clip_inputs.append({
-                "input_idx": input_idx,
-                "start_ms": clip["start_ms"],
-                "duration_ms": clip["duration_ms"],
-            })
-            input_idx += 1
-
-        # 构建 filter_complex
-        filter_parts = []
-        current_label = "bg"
-
-        # 底层缩放
-        filter_parts.append(f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1[{current_label}]")
-
-        # 叠加 Live2D (缩放到右下角 30% 区域)
-        if has_live2d:
-            live2d_input = 1
-            # 缩放 Live2D 到 80% 宽度 (864px), 高度等比 1536px，定位右下角
-            filter_parts.append(f"[{live2d_input}:v]scale=864:1536[l2d_scaled]")
-            # x=1080-864=216, y=1920-1536=384
-            filter_parts.append(f"[{current_label}][l2d_scaled]overlay=216:384:shortest=1[v1]")
-            current_label = "v1"
-
-        # 叠加 Overlay
-        if has_overlay:
-            ov_input = 2 if has_live2d else 1
-            filter_parts.append(f"[{ov_input}:v]scale=1080:1920[ov]")
-            next_label = "v2"
-            filter_parts.append(f"[{current_label}][ov]overlay=0:0:shortest=1[{next_label}]")
-            current_label = next_label
-
-        # 最终视频输出
-        filter_parts.append(f"[{current_label}]format=yuv420p[vout]")
-
-        # 音频混合: TTS + video_clip 原声（按时间点 adelay）
-        audio_streams = []
-        if has_audio and clip_inputs:
-            # 有 clip 需要混合时，给 TTS 加 volume filter
-            filter_parts.append(f"[{audio_idx}:a]volume=1.0[tts]")
-            audio_streams.append("[tts]")
-
-        for i, clip_info in enumerate(clip_inputs):
-            delay_ms = clip_info["start_ms"]
-            clip_label = f"clip{i}"
-            # adelay 将音频延迟到正确时间点，volume 降低防止盖过 TTS
-            filter_parts.append(
-                f"[{clip_info['input_idx']}:a]volume=0.7,adelay={delay_ms}|{delay_ms}[{clip_label}]"
-            )
-            audio_streams.append(f"[{clip_label}]")
-
-        # 混合所有音频流
-        if len(audio_streams) > 1:
-            mix_inputs = "".join(audio_streams)
-            filter_parts.append(
-                f"{mix_inputs}amix=inputs={len(audio_streams)}:duration=longest:dropout_transition=2[aout]"
-            )
-            audio_output = "[aout]"
-        elif len(audio_streams) == 1:
-            # 只有 clip 没有 TTS（不太可能但防御性处理）
-            audio_output = audio_streams[0]
-        else:
-            audio_output = None
-
-        filter_complex = ";".join(filter_parts)
-        cmd.extend(["-filter_complex", filter_complex])
-
-        # Output mapping
-        cmd.extend(["-map", "[vout]"])
-        if audio_output:
-            cmd.extend(["-map", audio_output])
-            cmd.extend(["-c:a", "aac", "-b:a", "128k"])
-        elif has_audio:
-            cmd.extend(["-map", f"{audio_idx}:a"])
-            cmd.extend(["-c:a", "aac", "-b:a", "128k"])
-        elif clip_inputs:
-            # 只有 clip 原声没有 TTS
-            cmd.extend(["-map", f"{clip_inputs[0]['input_idx']}:a"])
-            cmd.extend(["-c:a", "aac", "-b:a", "128k"])
-
-        # Video encoding
-        cmd.extend([
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "20",
-            "-t", str(duration_s),
-            str(output_mp4),
-        ])
-
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if result.returncode == 0:
-                size_mb = output_mp4.stat().st_size / (1024 * 1024)
-                logger.info(f"[compose] ✅ {script_id} -> {size_mb:.1f}MB")
-                success += 1
-            else:
-                logger.error(f"[compose] ❌ {script_id}:\n{result.stderr[:500]}")
-        except subprocess.TimeoutExpired:
-            logger.error(f"[compose] ⏰ 超时: {script_id}")
-        except Exception as e:
-            logger.error(f"[compose] 💥 {script_id}: {e}")
+        if result:
+            success += 1
 
         # 清理临时合并音频
         if merged_audio and merged_audio.exists() and "final" in str(merged_audio.parent):
@@ -507,7 +397,240 @@ def step_compose(config: dict, today: str, data_root: Path):
     logger.info(f"[compose] 合成完成: {success}/{len(script_files)}")
 
 
-def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path) -> Path | None:
+def _compose_studio(
+    studio_bg: Path,
+    studio_desk: Path,
+    live2d_webm: Path,
+    overlay_webm: Path,
+    merged_audio,
+    media_segments: list,
+    duration_s: float,
+    output_mp4: Path,
+    script_id: str,
+    today: str = "",
+) -> bool:
+    """演播室合成核心逻辑
+
+    演播室底层全程存在, 素材段通过 overlay + fade alpha 覆盖全屏,
+    Live2D 用 split 分两路: 演播室模式居中大版, 素材段缩小到右下角.
+    """
+    import subprocess
+
+    FADE_DURATION = 0.5
+
+    cmd = ["ffmpeg", "-y"]
+    input_idx = 0
+
+    # Input 0: 演播室背景 (loop)
+    cmd.extend(["-loop", "1", "-i", str(studio_bg)])
+    bg_idx = input_idx
+    input_idx += 1
+
+    # Input: 流星特效 (VP9 alpha, loop)
+    meteor_fx_path = Path(__file__).resolve().parent.parent.parent / "assets" / "studio" / "meteor_fx.webm"
+    has_meteor = meteor_fx_path.exists()
+    if has_meteor:
+        cmd.extend(["-stream_loop", "-1", "-vcodec", "libvpx-vp9", "-i", str(meteor_fx_path)])
+        meteor_idx = input_idx
+        input_idx += 1
+
+    # Input 1: Live2D (VP9 alpha)
+    has_live2d = live2d_webm.exists()
+    if has_live2d:
+        cmd.extend(["-vcodec", "libvpx-vp9", "-i", str(live2d_webm)])
+        l2d_idx = input_idx
+        input_idx += 1
+
+    # Input 2: 演播台前景 (loop)
+    cmd.extend(["-loop", "1", "-i", str(studio_desk)])
+    desk_idx = input_idx
+    input_idx += 1
+
+    # Input 3: Overlay WebM (VP9 alpha)
+    has_overlay = overlay_webm.exists()
+    if has_overlay:
+        cmd.extend(["-vcodec", "libvpx-vp9", "-i", str(overlay_webm)])
+        ov_idx = input_idx
+        input_idx += 1
+
+    # Input 4+: 素材文件 (image/video_clip)
+    media_input_map = []
+    for seg in media_segments:
+        if seg["type"] == "video_clip":
+            time_range = seg.get("time_range", [])
+            if time_range and len(time_range) >= 1:
+                cmd.extend(["-ss", str(time_range[0])])
+            cmd.extend(["-i", str(seg["source"])])
+        else:
+            cmd.extend(["-loop", "1", "-i", str(seg["source"])])
+        media_input_map.append({
+            "input_idx": input_idx,
+            "start_s": seg["start_s"],
+            "end_s": seg["end_s"],
+            "type": seg["type"],
+            "play_audio": seg.get("play_audio", False),
+        })
+        input_idx += 1
+
+    # Input N: TTS 音频
+    has_audio = merged_audio is not None and Path(str(merged_audio)).exists()
+    if has_audio:
+        cmd.extend(["-i", str(merged_audio)])
+        audio_idx = input_idx
+        input_idx += 1
+
+    # --- filter_complex ---
+    fp = []
+
+    # 1. 背景
+    fp.append(
+        f"[{bg_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        f"crop=1080:1920,setsar=1[studio_bg]"
+    )
+
+    # 1.5 流星特效叠加到背景上
+    if has_meteor:
+        fp.append(f"[{meteor_idx}:v]scale=1080:1920,format=yuva420p[meteor]")
+        fp.append("[studio_bg][meteor]overlay=0:0:shortest=1[studio_bg_fx]")
+        bg_label = "studio_bg_fx"
+    else:
+        bg_label = "studio_bg"
+
+    # 2. Live2D
+    if has_live2d:
+        if media_segments:
+            fp.append(f"[{l2d_idx}:v]split=2[l2d_raw_big][l2d_raw_small]")
+            fp.append("[l2d_raw_big]scale=864:1536[l2d_big]")
+            fp.append("[l2d_raw_small]scale=540:960[l2d_small]")
+        else:
+            fp.append(f"[{l2d_idx}:v]scale=864:1536[l2d_big]")
+        fp.append(f"[{bg_label}][l2d_big]overlay=108:100:shortest=1[with_char]")
+    else:
+        fp.append(f"[{bg_label}]copy[with_char]")
+
+    # 3. 演播台前景
+    fp.append(f"[{desk_idx}:v]scale=1080:580[desk]")
+    fp.append("[with_char][desk]overlay=0:1340:shortest=1[studio_full]")
+
+    # 4. 顶部 bar + 底部 ticker
+    ticker_text = "AI Daily | Hot News | Tech Updates"
+    fp.append(
+        "[studio_full]"
+        "drawbox=x=0:y=0:w=1080:h=80:color=black@0.6:t=fill,"
+        "drawtext=text='Mili Channel':fontsize=32:fontcolor=white:x=20:y=25,"
+        f"drawtext=text='{today}':fontsize=28:fontcolor=white@0.8:x=900:y=28,"
+        "drawbox=x=0:y=1840:w=1080:h=80:color=black@0.75:t=fill,"
+        "drawtext=text='LIVE':fontsize=36:fontcolor=white:x=15:y=1860:"
+        "box=1:boxcolor=red:boxborderw=6,"
+        f"drawtext=text='{ticker_text}':"
+        "fontsize=28:fontcolor=white:x='1080-mod(t*200\\,2400)':y=1862[studio_ui]"
+    )
+
+    # 5. Visual 轨内容已合并到 overlay webm（透明），不再需要单独层
+    cur = "studio_ui"
+
+    # 6. 素材段叠加 (等比居中 + 黑色填充 + fade)
+    for i, mseg in enumerate(media_input_map):
+        mi = mseg["input_idx"]
+        start = mseg["start_s"]
+        end = mseg["end_s"]
+        dur = end - start
+
+        fade_in_d = min(FADE_DURATION, dur / 2)
+        fade_out_st = max(0, dur - FADE_DURATION)
+
+        # 素材链: 等比缩放 → 黑色不透明pad到1760(留顶底bar) → trim → fade → 时间偏移
+        fp.append(
+            f"[{mi}:v]scale=1080:1760:force_original_aspect_ratio=decrease,setsar=1,"
+            f"pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"setpts=PTS-STARTPTS,trim=duration={dur},setpts=PTS-STARTPTS,"
+            f"fade=t=in:st=0:d={fade_in_d},"
+            f"fade=t=out:st={fade_out_st}:d={FADE_DURATION},"
+            f"setpts=PTS+{start}/TB[media_{i}]"
+        )
+
+        nxt = f"v_m{i}"
+        fp.append(
+            f"[{cur}][media_{i}]overlay=0:80:eof_action=pass:shortest=0[{nxt}]"
+        )
+        cur = nxt
+
+    # 6. Live2D 小版本 (素材段右下角, 延迟0.5s出现/提前0.5s消失)
+    if has_live2d and media_segments:
+        delay = FADE_DURATION  # 和素材 fade 时长一致
+        parts = [
+            f"between(t,{m['start_s']+delay},{m['end_s']-delay})"
+            for m in media_input_map
+            if m['end_s'] - m['start_s'] > delay * 3  # 太短的段不显示小角色
+        ]
+        if parts:
+            enable_expr = "+".join(parts)
+            nxt = "v_small"
+            fp.append(
+                f"[{cur}][l2d_small]overlay=510:880:"
+                f"enable='gte({enable_expr},1)':eof_action=pass[{nxt}]"
+            )
+            cur = nxt
+
+
+    # 7. Overlay (remotion 全程)
+    if has_overlay:
+        fp.append(f"[{ov_idx}:v]scale=1080:1920[ov]")
+        nxt = "v_final"
+        fp.append(f"[{cur}][ov]overlay=0:0:shortest=1[{nxt}]")
+        cur = nxt
+
+    # 8. 输出格式
+    fp.append(f"[{cur}]format=yuv420p[vout]")
+
+    # 音频处理
+    # merged_audio 已经包含了 TTS + video_clip 原声（按正确时间位置混合好的）
+    # 不需要再单独处理 video_clip 音频
+    audio_output = None
+    if has_audio:
+        afp = [f"[{audio_idx}:a]volume=1.0[aout]"]
+        audio_output = "[aout]"
+    else:
+        afp = []
+
+    # 合并 filter_complex
+    filter_complex = ";".join(fp + afp)
+    cmd.extend(["-filter_complex", filter_complex])
+
+    # Output mapping
+    cmd.extend(["-map", "[vout]"])
+    if audio_output:
+        cmd.extend(["-map", audio_output, "-c:a", "aac", "-b:a", "128k"])
+    elif has_audio:
+        cmd.extend(["-map", f"{audio_idx}:a", "-c:a", "aac", "-b:a", "128k"])
+
+    # Video encoding
+    cmd.extend([
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-t", str(duration_s), str(output_mp4),
+    ])
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=1800, encoding="utf-8", errors="replace",
+        )
+        if result.returncode == 0:
+            size_mb = output_mp4.stat().st_size / (1024 * 1024)
+            logger.info(f"[compose] ✅ {script_id} -> {size_mb:.1f}MB")
+            return True
+        else:
+            logger.error(f"[compose] ❌ {script_id}:\n{result.stderr[-800:]}")
+            return False
+    except subprocess.TimeoutExpired:
+        logger.error(f"[compose] ⏰ 超时: {script_id}")
+        return False
+    except Exception as e:
+        logger.error(f"[compose] 💥 {script_id}: {e}")
+        return False
+
+
+def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):
     """将多段 TTS WAV + 视频原声按时间轴合并为一个完整音频文件
     
     支持:
@@ -519,6 +642,10 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path) 
 
     if not audio_seg_dir.exists():
         audio_seg_dir.mkdir(parents=True, exist_ok=True)
+
+    # 清理旧的视频音频缓存（防止脚本变更后 vi_idx 映射错位）
+    for old_audio in audio_seg_dir.glob("video_audio_*.wav"):
+        old_audio.unlink()
 
     total_ms = script.get("total_duration_ms", 30000)
     voice_items = script.get("tracks", {}).get("voice", [])
@@ -593,17 +720,54 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path) 
     if not audio_segments:
         return None
 
-    # 如果只有一段且起始为0，直接返回
-    if len(audio_segments) == 1 and audio_segments[0][1] == 0:
+    # 构建 play_audio 时间段列表（用于 TTS 静音）
+    play_audio_ranges = []
+    for vis_item in visual_items:
+        if vis_item.get("type") == "video_clip" and vis_item.get("play_audio"):
+            pa_start = vis_item.get("start_ms", 0)
+            pa_end = pa_start + vis_item.get("duration_ms", 0)
+            play_audio_ranges.append((pa_start, pa_end))
+
+    # 如果只有一段且起始为0，且无 play_audio 冲突，直接返回
+    if len(audio_segments) == 1 and audio_segments[0][1] == 0 and not play_audio_ranges:
         return audio_segments[0][0]
 
-    # 用 FFmpeg 的 adelay + amix 合并到正确时间位置
+    # 用 FFmpeg 的 adelay + volume ducking + amix 合并到正确时间位置
     cmd = ["ffmpeg", "-y"]
     filter_parts = []
 
     for idx, (wav_path, start_ms) in enumerate(audio_segments):
         cmd.extend(["-i", str(wav_path)])
-        filter_parts.append(f"[{idx}:a]adelay={start_ms}|{start_ms}[a{idx}]")
+        
+        # 检查这个音频片段是否是 TTS（voice_*.wav）还是 video_audio
+        is_tts = "voice_" in wav_path.name
+        
+        if is_tts and play_audio_ranges:
+            # 对 TTS 应用 volume ducking：在 play_audio 时段静音
+            # 注意：volume 表达式里的时间是相对于该片段的全局时间（adelay 后）
+            # adelay 后该片段从 start_ms 开始，所以用绝对时间 between(t, pa_start/1000, pa_end/1000)
+            # 但 adelay 是放在 volume 之后的，所以 volume 里的 t 是片段本地时间
+            # 需要换算：全局时间 = 本地时间 + start_ms/1000
+            # between(本地t + offset, pa_start_s, pa_end_s) 
+            # => between(t, pa_start_s - offset, pa_end_s - offset)
+            offset_s = start_ms / 1000.0
+            duck_parts = []
+            for pa_start, pa_end in play_audio_ranges:
+                local_start = pa_start / 1000.0 - offset_s
+                local_end = pa_end / 1000.0 - offset_s
+                if local_end > 0:  # 只有和本片段有时间重叠才需要
+                    local_start = max(0, local_start)
+                    duck_parts.append(f"between(t,{local_start:.3f},{local_end:.3f})")
+            
+            if duck_parts:
+                duck_expr = "+".join(duck_parts)
+                filter_parts.append(
+                    f"[{idx}:a]volume='1-min(1,{duck_expr})':eval=frame,adelay={start_ms}|{start_ms}[a{idx}]"
+                )
+            else:
+                filter_parts.append(f"[{idx}:a]adelay={start_ms}|{start_ms}[a{idx}]")
+        else:
+            filter_parts.append(f"[{idx}:a]adelay={start_ms}|{start_ms}[a{idx}]")
 
     n = len(filter_parts)
     mix_inputs = "".join(f"[a{i}]" for i in range(n))
@@ -626,7 +790,7 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path) 
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,  # 聚合视频更长，增加超时
+            timeout=120,
             encoding="utf-8",
             errors="replace",
         )

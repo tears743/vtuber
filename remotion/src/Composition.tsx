@@ -51,7 +51,7 @@ function getPositionStyles(pos: string): React.CSSProperties {
   // 垂直
   if (pos.includes("top")) {
     styles.alignItems = "flex-start";
-    styles.paddingTop = 80;
+    styles.paddingTop = 120;
   } else if (pos.includes("bottom")) {
     styles.alignItems = "flex-end";
     styles.paddingBottom = 80;
@@ -73,8 +73,8 @@ function getPositionStyles(pos: string): React.CSSProperties {
   return styles;
 }
 
-function renderOverlayItem(item: OverlayItem, index: number, globalStyle: StyleType) {
-  const props = item.props || {};
+function renderOverlayItem(item: OverlayItem, index: number, globalStyle: StyleType, position: string) {
+  const props = { ...(item.props || {}), position };
   const style = item.style || globalStyle;
 
   switch (item.type) {
@@ -111,9 +111,12 @@ export const OverlayComposition: React.FC<CompositionProps> = ({
         const scale = item.scale ?? 1.0;
         const offsetX = item.offsetX ?? 0;
         const offsetY = item.offsetY ?? 0;
+        const position = item.position || item.props?.position || "top";
 
         // 只有 scale != 1 或有 offset 时才应用 transform
         const needsTransform = scale !== 1.0 || offsetX !== 0 || offsetY !== 0;
+
+        const posStyles = getPositionStyles(position);
 
         return (
           <Sequence
@@ -121,18 +124,19 @@ export const OverlayComposition: React.FC<CompositionProps> = ({
             from={msToFrames(item.start_ms)}
             durationInFrames={msToFrames(item.duration_ms)}
           >
-            {needsTransform ? (
-              <AbsoluteFill
-                style={{
-                  transform: `scale(${scale}) translate(${offsetX}px, ${offsetY}px)`,
-                  transformOrigin: "center center",
-                }}
-              >
-                {renderOverlayItem(item, i, style)}
-              </AbsoluteFill>
-            ) : (
-              renderOverlayItem(item, i, style)
-            )}
+            <AbsoluteFill
+              style={{
+                ...posStyles,
+                ...(needsTransform
+                  ? {
+                      transform: `scale(${scale}) translate(${offsetX}px, ${offsetY}px)`,
+                      transformOrigin: "center center",
+                    }
+                  : {}),
+              }}
+            >
+              {renderOverlayItem(item, i, style, position)}
+            </AbsoluteFill>
           </Sequence>
         );
       })}

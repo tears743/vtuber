@@ -1,37 +1,25 @@
 import json
-from pathlib import Path
 
 s = json.load(open(r'D:\workspace\videoFactory\data\2026-06-16\scripts_aligned\hot_daily.json', 'r', encoding='utf-8'))
-visual_items = s['tracks']['visual']
 
-print("=== VISUAL TRACK: video_clip items (画面顺序) ===")
-media_idx = 0
-for vi_idx, vis in enumerate(visual_items):
-    if vis.get('type') not in ('image', 'video_clip'):
-        continue
-    is_video = vis.get('type') == 'video_clip'
-    src = vis.get('source', '')[-50:]
-    play_audio = vis.get('play_audio', False)
-    time_range = vis.get('time_range', [])
-    start_s = vis['start_ms'] / 1000
-    print(f"  media_idx={media_idx}, vi_idx={vi_idx}, start={start_s:.1f}s, type={vis['type']}")
-    print(f"    source=...{src}")
-    if is_video:
-        print(f"    time_range={time_range}, play_audio={play_audio}")
-    print()
-    media_idx += 1
+print("=== VIDEO CLIPS ===")
+vis = [v for v in s['tracks']['visual'] if v.get('type') == 'video_clip']
+for v in vis:
+    start = v['start_ms'] / 1000
+    dur = v['duration_ms'] / 1000
+    tr = v.get('time_range', [])
+    audio = v.get('play_audio', False)
+    print(f"  start={start:.1f}s dur={dur:.1f}s time_range={tr} play_audio={audio}")
 
 print()
-print("=== AUDIO: play_audio 视频音频 (音频提取顺序) ===")
-for vi_idx, vis in enumerate(visual_items):
-    if vis.get('type') != 'video_clip':
-        continue
-    if not vis.get('play_audio', False):
-        continue
-    src = vis.get('source', '')[-50:]
-    time_range = vis.get('time_range', [])
-    start_ms = vis.get('start_ms', 0)
-    print(f"  vi_idx={vi_idx}, start={start_ms/1000:.1f}s, time_range={time_range}")
-    print(f"    source=...{src}")
-    print(f"    audio_file=video_audio_{vi_idx:02d}.wav, placed at {start_ms}ms")
-    print()
+print("=== VOICE around first video (0-20s) ===")
+voice = s['tracks']['voice']
+for v in voice[:6]:
+    start = v['start_ms'] / 1000
+    dur = v.get('duration_ms', 0) / 1000
+    text = v.get('text', '')[:40]
+    print(f"  {start:.1f}s - {start+dur:.1f}s: {text}")
+
+print()
+print(f"Total duration: {s['total_duration_ms']/1000:.1f}s")
+print(f"Total video clips: {len(vis)}")

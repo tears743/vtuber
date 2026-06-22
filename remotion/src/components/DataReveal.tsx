@@ -8,6 +8,7 @@ interface DataRevealProps {
   description?: string;
   color?: string;
   style?: StyleType;
+  position?: "center" | "top" | "bottom";
   // Director 生成的格式
   number?: string;
   label?: string;
@@ -18,6 +19,7 @@ export const DataReveal: React.FC<DataRevealProps> = (props) => {
     unit = "",
     color,
     style = "default",
+    position = "center",
   } = props;
   // 兼容 Director 格式: {number, label} → {value, title}
   const title = props.title || props.label || "";
@@ -53,11 +55,16 @@ export const DataReveal: React.FC<DataRevealProps> = (props) => {
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
   );
 
+  const justifyContent =
+    position === "top" ? "flex-start" : position === "bottom" ? "flex-end" : "center";
+
   return (
     <AbsoluteFill
       style={{
-        justifyContent: "center",
+        justifyContent,
         alignItems: "center",
+        paddingTop: position === "top" ? 120 : 0,
+        paddingBottom: position === "bottom" ? 80 : 0,
         fontFamily: t.fontFamily,
         opacity: fadeOut,
       }}

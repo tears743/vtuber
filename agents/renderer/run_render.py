@@ -613,7 +613,7 @@ def _compose_studio(
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=600, encoding="utf-8", errors="replace",
+            timeout=1800, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             size_mb = output_mp4.stat().st_size / (1024 * 1024)

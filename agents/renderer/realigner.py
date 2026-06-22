@@ -74,11 +74,13 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
     script_id = aligned.get("id", "unknown")
     
     # 收集 play_audio 段（原始时间），并用源视频实际时长修正 duration
+    # 保存 (pa_start, original_dur, expanded_dur) 用于正确构建 time_shifts
     play_audio_ranges = []
     for vitem in visual_items:
         if vitem.get("type") == "video_clip" and vitem.get("play_audio"):
             pa_start = vitem.get("start_ms", 0)
             pa_dur = vitem.get("duration_ms", 0)
+            original_dur = pa_dur  # 保存原始脚本中的时长
             
             # 用 ffprobe 读取源视频实际时长，确保完整播放
             source = vitem.get("source", "")
@@ -90,14 +92,14 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
                     # 从 range_start 到视频末尾的可用时长
                     available_ms = max(0, actual_dur_ms - range_start_ms)
                     if available_ms > pa_dur:
-                        old_dur = pa_dur
                         pa_dur = available_ms
                         range_end = range_start_ms / 1000.0 + pa_dur / 1000.0
                         vitem["duration_ms"] = pa_dur
                         vitem["time_range"] = [time_range[0] if time_range else 0, range_end]
-                        logger.info(f"[realigner] 视频原声扩展: {old_dur}ms -> {pa_dur}ms ({Path(source).parent.name})")
+                        logger.info(f"[realigner] 视频原声扩展: {original_dur}ms -> {pa_dur}ms ({Path(source).parent.name})")
             
-            play_audio_ranges.append((pa_start, pa_start + pa_dur, pa_dur))
+            # (pa_start, original_dur, expanded_dur)
+            play_audio_ranges.append((pa_start, original_dur, pa_dur))
     play_audio_ranges.sort(key=lambda x: x[0])
     
     # 构建事件序列：按原始 start_ms 排序所有 voice + play_audio
@@ -117,8 +119,9 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             new_dur = old_dur
         events.append(("voice", i, old_start, old_dur, new_dur))
     
-    for pi, (pa_start, pa_end, pa_dur) in enumerate(play_audio_ranges):
-        events.append(("pa", pi, pa_start, pa_dur, pa_dur))
+    for pi, (pa_start, pa_original_dur, pa_expanded_dur) in enumerate(play_audio_ranges):
+        # event: ("pa", index, old_start, old_dur_for_shifts, new_dur_for_placement)
+        events.append(("pa", pi, pa_start, pa_original_dur, pa_expanded_dur))
     
     # 按原始 start_ms 排序
     events.sort(key=lambda e: e[2])
@@ -166,26 +169,30 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             current_ms += new_dur
             
         elif evt_type == "pa":
-            pi, old_start, old_dur = evt[1], evt[2], evt[3]
+            pi, old_start = evt[1], evt[2]
+            pa_original_dur = evt[3]   # 原始脚本时长（用于 old 范围）
+            pa_expanded_dur = evt[4]   # 扩展后时长（用于 new 范围/实际放置）
             
             # play_audio 紧接前一个 voice（仅 200ms 间隔）
             if time_shifts:
                 current_ms = max(current_ms, time_shifts[-1][3] + 200)
             
-            pa_timing[pi] = (current_ms, old_dur)
-            time_shifts.append((old_start, old_start + old_dur, current_ms, current_ms + old_dur))
+            pa_timing[pi] = (current_ms, pa_expanded_dur)
+            # old 范围用原始时长，new 范围用扩展后时长
+            # 这样 map_time 对 old_start+original_dur 之后的内容正确映射到 PA 之后
+            time_shifts.append((old_start, old_start + pa_original_dur, current_ms, current_ms + pa_expanded_dur))
             
             # 同步设置伴随的空 voice 段（和 pa 完全重合）
             for ei2 in range(len(events) - 1):
                 if events[ei2][0] == "voice" and events[ei2][1] in empty_voice_for_pa:
                     if ei2 + 1 < len(events) and events[ei2 + 1][0] == "pa" and events[ei2 + 1][1] == pi:
                         vidx = events[ei2][1]
-                        voice_timing[vidx] = (current_ms, old_dur)
+                        voice_timing[vidx] = (current_ms, pa_expanded_dur)
                         voice_items[vidx]["start_ms"] = current_ms
-                        voice_items[vidx]["duration_ms"] = old_dur
+                        voice_items[vidx]["duration_ms"] = pa_expanded_dur
                         break
             
-            current_ms += old_dur
+            current_ms += pa_expanded_dur
     
     # Step 2: live2d 轨跟随 voice 轨时间
     live2d_items = tracks.get("live2d", [])
@@ -246,57 +253,21 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
                 item["duration_ms"] = pa_timing[pa_idx][1]
             pa_idx += 1
     
-    # 其他 visual items：按原始顺序重排，填充 PA 片段之间的空隙
-    # 先收集 PA 的精确时间窗口（已定位）
-    pa_windows = []  # [(start, end)]
+    # 所有非 PA visual items 统一用 map_time 对齐
+    # 这样保持它们与对应语音段的相对时间关系
     for item in visual_items:
         if item.get("type") == "video_clip" and item.get("play_audio"):
-            pa_windows.append((item["start_ms"], item["start_ms"] + item["duration_ms"]))
-    pa_windows.sort(key=lambda x: x[0])
-    
-    # 非 PA visual items 按原始顺序收集
-    non_pa_visuals = []
-    for item in visual_items:
-        if not (item.get("type") == "video_clip" and item.get("play_audio")):
-            non_pa_visuals.append(item)
-    
-    # 按原始 start_ms 排序非 PA items
-    non_pa_visuals.sort(key=lambda x: x.get("start_ms", 0))
-    
-    # 找到每个非 PA item 属于哪个 PA 的"前导"（紧挨在 PA 之前的段落）
-    # 策略：按顺序放置，遇到 PA 窗口就跳过
-    cursor = 0  # 当前可用起始时间
-    pa_idx_cursor = 0  # 下一个要跳过的 PA 窗口
-    
-    for item in non_pa_visuals:
+            continue  # PA items 已在上面精确定位
+        
+        old_start = item.get("start_ms", 0)
         old_dur = item.get("duration_ms", 0)
+        old_end = old_start + old_dur
         
-        # 检查当前 cursor 是否落入某个 PA 窗口内
-        while pa_idx_cursor < len(pa_windows):
-            pa_start, pa_end = pa_windows[pa_idx_cursor]
-            if cursor >= pa_end:
-                # 已经过了这个 PA 窗口
-                pa_idx_cursor += 1
-            elif cursor >= pa_start:
-                # cursor 在 PA 窗口内，跳到 PA 结束后
-                cursor = pa_end
-                pa_idx_cursor += 1
-            elif cursor + old_dur > pa_start:
-                # item 会和 PA 重叠，缩短或放在 PA 之前
-                available = pa_start - cursor
-                if available >= 1000:  # 至少 1 秒可用
-                    old_dur = available
-                    break
-                else:
-                    # 放到 PA 后面
-                    cursor = pa_end
-                    pa_idx_cursor += 1
-            else:
-                break
+        new_start = map_time(old_start)
+        new_end = map_time(old_end)
         
-        item["start_ms"] = cursor
-        item["duration_ms"] = max(old_dur, 100)
-        cursor += item["duration_ms"]
+        item["start_ms"] = new_start
+        item["duration_ms"] = max(new_end - new_start, 100)
     
     # overlay/background 轨用 map_time
     for track_name in ("overlay", "background"):

@@ -225,6 +225,7 @@ def render_live2d(
     )
 
     # 调用 Remotion 渲染
+    # concurrency=1: Live2D 动画有状态（每帧依赖前一帧），不能并行
     cmd = [
         "npx", "remotion", "render",
         "src/index.ts",

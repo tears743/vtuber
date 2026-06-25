@@ -82,21 +82,28 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             pa_dur = vitem.get("duration_ms", 0)
             original_dur = pa_dur  # 保存原始脚本中的时长
             
-            # 用 ffprobe 读取源视频实际时长，确保完整播放
+            # 用 ffprobe 读取源视频实际时长，确保不超出视频边界
             source = vitem.get("source", "")
             if source and Path(source).exists():
                 actual_dur_ms = _get_video_duration_ms(Path(source))
                 if actual_dur_ms:
                     time_range = vitem.get("time_range", [0])
                     range_start_ms = int((time_range[0] if time_range else 0) * 1000)
-                    # 从 range_start 到视频末尾的可用时长
-                    available_ms = max(0, actual_dur_ms - range_start_ms)
-                    if available_ms > pa_dur:
-                        pa_dur = available_ms
-                        range_end = range_start_ms / 1000.0 + pa_dur / 1000.0
+                    
+                    # 如果 time_range 有明确的 end 值（精确裁剪模式），直接用它
+                    if len(time_range) >= 2 and time_range[1] > time_range[0]:
+                        clip_dur_ms = int((time_range[1] - time_range[0]) * 1000)
+                        pa_dur = clip_dur_ms
                         vitem["duration_ms"] = pa_dur
-                        vitem["time_range"] = [time_range[0] if time_range else 0, range_end]
-                        logger.info(f"[realigner] 视频原声扩展: {original_dur}ms -> {pa_dur}ms ({Path(source).parent.name})")
+                    else:
+                        # 旧模式：从 range_start 到视频末尾全部播放
+                        available_ms = max(0, actual_dur_ms - range_start_ms)
+                        if available_ms > pa_dur:
+                            pa_dur = available_ms
+                            range_end = range_start_ms / 1000.0 + pa_dur / 1000.0
+                            vitem["duration_ms"] = pa_dur
+                            vitem["time_range"] = [time_range[0] if time_range else 0, range_end]
+                            logger.info(f"[realigner] 视频原声扩展: {original_dur}ms -> {pa_dur}ms ({Path(source).parent.name})")
             
             # (pa_start, original_dur, expanded_dur)
             play_audio_ranges.append((pa_start, original_dur, pa_dur))
@@ -138,6 +145,17 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             if not voice_text:
                 empty_voice_for_pa.add(voice_idx)
     
+    # 标记紧接 PA 的有文本 voice 段（引导语如"听听主播怎么说"）
+    voice_before_pa = set()
+    for ei in range(len(events) - 1):
+        evt = events[ei]
+        nxt = events[ei + 1]
+        if evt[0] == "voice" and nxt[0] == "pa":
+            voice_idx = evt[1]
+            voice_text = voice_items[voice_idx].get("text", "").strip()
+            if voice_text:  # 有文本的引导语
+                voice_before_pa.add(voice_idx)
+    
     # 顺序放置事件
     current_ms = events[0][2] if events else 0  # 第一个事件的原始起始
     voice_timing = {}  # {voice_index: (new_start, new_dur)}
@@ -154,9 +172,26 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             if idx in empty_voice_for_pa:
                 continue
             
-            # voice 之间加 300ms 间隔
+            # 引导语保护：紧接 PA 的 voice 段，如果 TTS 时长超过原始 2 倍或超过 5 秒，
+            # 强制 cap（引导语只是一句话，不应超 5 秒）
+            if idx in voice_before_pa and new_dur > min(old_dur * 2, 5000):
+                capped_dur = min(old_dur + 1000, 5000)  # 最多 5 秒
+                logger.warning(
+                    f"[realigner] 引导语 voice[{idx}] TTS 过长: "
+                    f"{new_dur}ms -> cap 到 {capped_dur}ms (原始 {old_dur}ms)"
+                )
+                new_dur = capped_dur
+            
+            # voice 之间保留原始间隔（非固定 300ms）
+            # 原始间隔中可能有 video_clip(play_audio=false) 画面在播放
             if time_shifts:
-                current_ms = max(current_ms, time_shifts[-1][3] + 300)
+                last_new_end = time_shifts[-1][3]
+                last_old_end = time_shifts[-1][1]
+                # 原始间隔 = 当前事件原始 start - 上一个事件原始 end
+                original_gap = old_start - last_old_end
+                # 保留原始间隔，但最少 300ms
+                preserved_gap = max(original_gap, 300)
+                current_ms = max(current_ms, last_new_end + preserved_gap)
             
             voice_timing[idx] = (current_ms, new_dur)
             time_shifts.append((old_start, old_start + old_dur, current_ms, current_ms + new_dur))
@@ -194,12 +229,9 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
             
             current_ms += pa_expanded_dur
     
-    # Step 2: live2d 轨跟随 voice 轨时间
-    live2d_items = tracks.get("live2d", [])
-    for i, item in enumerate(live2d_items):
-        if i in voice_timing:
-            item["start_ms"] = voice_timing[i][0]
-            item["duration_ms"] = voice_timing[i][1]
+    # Step 2: live2d 轨用 map_time 对齐（与 voice 解耦）
+    # 这样 Mili 可以边做动作边说话，不需要等动作完成
+    # 注意：map_time 函数在后面定义，所以移到 Step 3 之后处理
     
     # Step 3: 同步调整 visual/overlay/background 轨
     # 构建时间映射函数
@@ -269,8 +301,9 @@ def _realign_tracks(aligned: dict, audio_durations: dict[int, int]) -> dict:
         item["start_ms"] = new_start
         item["duration_ms"] = max(new_end - new_start, 100)
     
-    # overlay/background 轨用 map_time
-    for track_name in ("overlay", "background"):
+    # overlay/background/live2d 轨用 map_time
+    # live2d 与 voice 解耦：动作和说话可以同时进行
+    for track_name in ("overlay", "background", "live2d"):
         items = tracks.get(track_name, [])
         for item in items:
             old_start = item.get("start_ms", 0)

@@ -329,8 +329,8 @@ def step_compose(config: dict, today: str, data_root: Path):
         script_id = script.get("id", script_path.stem)
         output_mp4 = output_dir / f"{script_id}.mp4"
 
-        # 跳过已存在的
-        if output_mp4.exists():
+        # 跳过已存在且有效的（非空）
+        if output_mp4.exists() and output_mp4.stat().st_size > 0:
             logger.info(f"[compose] ⏭️ 已存在: {script_id}")
             success += 1
             continue
@@ -352,6 +352,20 @@ def step_compose(config: dict, today: str, data_root: Path):
         visual_items = tracks.get("visual", [])
         media_segments = []
 
+        # 加载 manifest 用于 author fallback
+        manifest_path = data_root / today / "media" / "manifest.json"
+        manifest = {}
+        if manifest_path.exists():
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        # 构建 source路径 → author 的映射（从 manifest）
+        _path_to_author = {}
+        for mkey, mval in manifest.items():
+            m_author = mval.get("author", "")
+            if m_author:
+                # manifest key 是 json 文件名，对应的媒体目录名是 stem
+                slug = mkey.replace(".json", "")
+                _path_to_author[slug] = m_author
 
         for vis in visual_items:
             vtype = vis.get("type", "")
@@ -360,6 +374,15 @@ def step_compose(config: dict, today: str, data_root: Path):
                 dur_ms = vis.get("duration_ms", 5000)
                 source = vis.get("source", "")
                 if source and Path(source).exists():
+                    # author: 优先用脚本中的，fallback 从 manifest 按路径匹配
+                    author = vis.get("author", "")
+                    if not author:
+                        # 从 source 路径中提取 slug 来匹配 manifest author
+                        source_parts = Path(source).parts
+                        for part in source_parts:
+                            if part in _path_to_author:
+                                author = _path_to_author[part]
+                                break
                     media_segments.append({
                         "start_s": start_ms / 1000.0,
                         "end_s": (start_ms + dur_ms) / 1000.0,
@@ -367,6 +390,7 @@ def step_compose(config: dict, today: str, data_root: Path):
                         "source": source,
                         "play_audio": vis.get("play_audio", False),
                         "time_range": vis.get("time_range", []),
+                        "author": author,
                     })
 
         # 构建 FFmpeg 命令
@@ -462,13 +486,15 @@ def _compose_studio(
                 cmd.extend(["-ss", str(time_range[0])])
             cmd.extend(["-i", str(seg["source"])])
         else:
-            cmd.extend(["-loop", "1", "-i", str(seg["source"])])
+            # -noautorotate 跳过 EXIF 旋转处理，避免损坏 EXIF 导致解码失败
+            cmd.extend(["-noautorotate", "-loop", "1", "-i", str(seg["source"])])
         media_input_map.append({
             "input_idx": input_idx,
             "start_s": seg["start_s"],
             "end_s": seg["end_s"],
             "type": seg["type"],
             "play_audio": seg.get("play_audio", False),
+            "author": seg.get("author", ""),
         })
         input_idx += 1
 
@@ -529,25 +555,30 @@ def _compose_studio(
     # 5. Visual 轨内容已合并到 overlay webm（透明），不再需要单独层
     cur = "studio_ui"
 
-    # 6. 素材段叠加 (等比居中 + 黑色填充 + fade)
+    # 6. 素材段叠加 (等比居中 + 黑色填充 + fade + 作者标注)
     for i, mseg in enumerate(media_input_map):
         mi = mseg["input_idx"]
         start = mseg["start_s"]
         end = mseg["end_s"]
         dur = end - start
+        author = mseg.get("author", "")
 
         fade_in_d = min(FADE_DURATION, dur / 2)
         fade_out_st = max(0, dur - FADE_DURATION)
 
-        # 素材链: 等比缩放 → 黑色不透明pad到1760(留顶底bar) → trim → fade → 时间偏移
-        fp.append(
+        # 素材链: 等比缩放 → 黑色不透明pad到1760(留顶底bar) → trim → fade
+        media_filter = (
             f"[{mi}:v]scale=1080:1760:force_original_aspect_ratio=decrease,setsar=1,"
             f"pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black,"
             f"setpts=PTS-STARTPTS,trim=duration={dur},setpts=PTS-STARTPTS,"
             f"fade=t=in:st=0:d={fade_in_d},"
-            f"fade=t=out:st={fade_out_st}:d={FADE_DURATION},"
-            f"setpts=PTS+{start}/TB[media_{i}]"
+            f"fade=t=out:st={fade_out_st}:d={FADE_DURATION}"
         )
+
+        # author 标签已改由 Remotion overlay 层渲染（支持中文无乱码）
+
+        media_filter += f",setpts=PTS+{start}/TB[media_{i}]"
+        fp.append(media_filter)
 
         nxt = f"v_m{i}"
         fp.append(
@@ -593,9 +624,13 @@ def _compose_studio(
     else:
         afp = []
 
-    # 合并 filter_complex
+    # 合并 filter_complex — 写入临时文件以避免 Windows 命令行长度/编码问题
+    import tempfile
     filter_complex = ";".join(fp + afp)
-    cmd.extend(["-filter_complex", filter_complex])
+    filter_script = output_mp4.parent / f"{script_id}_filter.txt"
+    with open(filter_script, "w", encoding="utf-8") as f:
+        f.write(filter_complex)
+    cmd.extend(["-filter_complex_script", str(filter_script)])
 
     # Output mapping
     cmd.extend(["-map", "[vout]"])
@@ -620,6 +655,10 @@ def _compose_studio(
             logger.info(f"[compose] ✅ {script_id} -> {size_mb:.1f}MB")
             return True
         else:
+            # 保存完整 stderr 到文件以供调试
+            err_log = output_mp4.parent / f"{script_id}_ffmpeg_err.log"
+            with open(err_log, "w", encoding="utf-8") as ef:
+                ef.write(result.stderr)
             logger.error(f"[compose] ❌ {script_id}:\n{result.stderr[-800:]}")
             return False
     except subprocess.TimeoutExpired:
@@ -628,6 +667,13 @@ def _compose_studio(
     except Exception as e:
         logger.error(f"[compose] 💥 {script_id}: {e}")
         return False
+    finally:
+        # 清理临时 filter 文件
+        if filter_script.exists():
+            try:
+                filter_script.unlink()
+            except:
+                pass
 
 
 def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):
@@ -654,10 +700,15 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):
     # 收集所有音频片段: (文件路径, 开始毫秒)
     audio_segments = []
 
-    # 1. TTS 语音片段
-    wav_files = sorted(audio_seg_dir.glob("voice_*.wav"))
-    for idx, item in enumerate(voice_items):
-        wav_path = audio_seg_dir / f"voice_{idx:02d}.wav"
+    # 1. TTS 语音片段 - 使用 audio_file 字段定位文件
+    for item in voice_items:
+        audio_file = item.get("audio_file", "")
+        if not audio_file:
+            continue  # 跳过空段（play_audio 留空段没有 audio_file）
+        wav_path = audio_seg_dir.parent.parent / audio_file
+        if not wav_path.exists():
+            # 兼容旧格式: 尝试从 audio_seg_dir 直接找
+            wav_path = audio_seg_dir / Path(audio_file).name
         if wav_path.exists():
             start_ms = item.get("start_ms", 0)
             audio_segments.append((wav_path, start_ms))

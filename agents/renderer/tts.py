@@ -55,7 +55,7 @@ class VoxCPMTTS:
         self,
         url: str = "http://127.0.0.1:8808",
         dialect: str = "四川话",
-        cfg_value: float = 3.0,
+        cfg_value: float = 2.0,
         inference_timesteps: int = 32,
         speed: str = "快",
     ):
@@ -120,7 +120,40 @@ class VoxCPMTTS:
                 f.write(resp.content)
             
             duration_ms = get_wav_duration_ms(output_path)
-            logger.info(f"[tts] ✅ {output_path.name}: {duration_ms}ms")
+            
+            # TTS 幻觉检测：中文语速约 4-6 字/秒，上限按 800ms/字计算
+            # 如果音频时长远超文本合理长度，说明模型产生了重复/幻觉
+            max_reasonable_ms = max(len(cleaned) * 800, 3000)  # 至少 3 秒
+            if duration_ms > max_reasonable_ms:
+                logger.warning(
+                    f"[tts] ⚠️ 幻觉检测: {output_path.name} "
+                    f"时长 {duration_ms}ms 超过合理上限 {max_reasonable_ms}ms "
+                    f"(文本 {len(cleaned)} 字), 截断音频"
+                )
+                # 用 ffmpeg 截断到合理时长
+                import subprocess
+                truncated_path = output_path.with_suffix(".trunc.wav")
+                trim_cmd = [
+                    "ffmpeg", "-y", "-i", str(output_path),
+                    "-t", str(max_reasonable_ms / 1000),
+                    "-ac", "1", str(truncated_path),
+                ]
+                try:
+                    subprocess.run(
+                        trim_cmd, capture_output=True, text=True,
+                        timeout=15, encoding="utf-8", errors="replace",
+                    )
+                    if truncated_path.exists():
+                        truncated_path.replace(output_path)
+                        duration_ms = get_wav_duration_ms(output_path)
+                        logger.info(f"[tts] ✅ 截断后: {output_path.name}: {duration_ms}ms")
+                except Exception as trim_e:
+                    logger.warning(f"[tts] 截断失败: {trim_e}")
+                    if truncated_path.exists():
+                        truncated_path.unlink()
+            else:
+                logger.info(f"[tts] ✅ {output_path.name}: {duration_ms}ms")
+            
             return output_path, duration_ms
             
         except requests.Timeout:

@@ -107,6 +107,11 @@ class MediaDownloader:
                     if readme_result:
                         existing["readme"] = readme_result
                 
+                # 保留 author 信息（用于视频播放时显示 @作者 标签）
+                author = data.get("author", "")
+                if author:
+                    existing["author"] = author
+                
                 if existing.get("images") or existing.get("video") or existing.get("readme"):
                     manifest[filepath.name] = existing
                     logger.info(
@@ -201,17 +206,28 @@ class MediaDownloader:
     
     def _download_douyin_video(self, url: str, item_dir: Path) -> Path | None:
         """
-        抖音视频下载 - yt-dlp 直接支持抖音 URL
+        抖音视频下载 - kukutool.com (primary) + yt-dlp (fallback)
         
-        不需要浏览器，不需要 cookie，yt-dlp 内置了抖音解析器
+        Strategy:
+        1. 通过 kukutool.com 第三方解析服务 + opencli browser 自动化下载
+        2. 失败后尝试 yt-dlp 直接下载（作为 fallback）
         """
         try:
             item_dir.mkdir(parents=True, exist_ok=True)
             local_path = item_dir / "video.mp4"
             
-            if local_path.exists():
+            if local_path.exists() and local_path.stat().st_size > 10000:
                 return local_path
             
+            # 尝试1: kukutool.com 浏览器自动化下载（主要方案，最多重试10次）
+            for attempt in range(10):
+                logger.info(f"[downloader] 尝试 kukutool 下载 (第{attempt+1}次): {url[:60]}")
+                if self._download_via_kukutool(url, local_path):
+                    return local_path
+                time.sleep(2)
+            
+            # 尝试2: yt-dlp 直接下载（fallback）
+            logger.info(f"[downloader] kukutool 失败，尝试 yt-dlp fallback...")
             result = subprocess.run(
                 ["yt-dlp", "-o", str(local_path), "--no-playlist", url],
                 capture_output=True, text=True, timeout=120,
@@ -219,14 +235,340 @@ class MediaDownloader:
             
             if result.returncode == 0 and local_path.exists():
                 size_mb = local_path.stat().st_size / (1024 * 1024)
-                logger.info(f"[downloader] 抖音视频下载成功: {size_mb:.1f}MB")
+                logger.info(f"[downloader] 抖音视频下载成功 (yt-dlp): {size_mb:.1f}MB")
                 return local_path
             
-            logger.debug(f"[downloader] 抖音视频 yt-dlp 失败: {result.stderr[:200]}")
             return None
             
         except Exception as e:
-            logger.debug(f"[downloader] 抖音视频下载失败: {url[:60]} - {e}")
+            logger.warning(f"[downloader] 抖音视频下载失败: {url[:60]} - {e}")
+            return None
+    
+    def _download_via_kukutool(self, douyin_url: str, output_path: Path, quality: str = "1080p") -> bool:
+        """
+        通过 kukutool.com + opencli browser 自动化下载抖音视频
+        
+        Flow: open kukutool -> close ad -> input URL -> parse -> copy link -> download
+        """
+        import re
+        
+        session = "kuku_dl"
+        
+        def browser_cmd(args: str, timeout: int = 30) -> str:
+            cmd = f"opencli browser {session} {args}"
+            try:
+                proc = subprocess.run(
+                    cmd, shell=True, capture_output=True, text=True,
+                    timeout=timeout, encoding="utf-8", errors="replace"
+                )
+                return proc.stdout.strip()
+            except Exception:
+                return ""
+        
+        def close_popup(state_text: str):
+            # 检测多种广告弹窗模式
+            ad_markers = ["aria-label=关闭", "解锁3小时", "广告", "cn.aliyun.com", "打开"]
+            if any(marker in state_text for marker in ad_markers):
+                for line in state_text.split("\n"):
+                    # 优先找 aria-label=关闭
+                    if "aria-label=关闭" in line:
+                        m = re.search(r'\[(\d+)\]', line)
+                        if m:
+                            browser_cmd(f"click {m.group(1)}", timeout=10)
+                            time.sleep(1)
+                            return True
+                # 找纯文字"关闭"按钮（如阿里云广告右上角）
+                for line in state_text.split("\n"):
+                    if "关闭" in line and ("button" in line or "link" in line or "span" in line):
+                        m = re.search(r'\[(\d+)\]', line)
+                        if m:
+                            browser_cmd(f"click {m.group(1)}", timeout=10)
+                            time.sleep(1)
+                            return True
+                # 最后尝试找任何带"关闭"的可点击元素
+                for line in state_text.split("\n"):
+                    if "关闭" in line and re.search(r'\[(\d+)\]', line):
+                        m = re.search(r'\[(\d+)\]', line)
+                        if m:
+                            browser_cmd(f"click {m.group(1)}", timeout=10)
+                            time.sleep(1)
+                            return True
+            return False
+        
+        def find_idx(state_text: str, pattern: str) -> str | None:
+            for line in state_text.split("\n"):
+                if pattern in line:
+                    m = re.search(r'\[(\d+)\]', line)
+                    if m:
+                        return m.group(1)
+            return None
+        
+        try:
+            # Open kukutool
+            browser_cmd('open "https://dy.kukutool.com/"', timeout=30)
+            time.sleep(3)
+            # Activate Chrome to foreground (ads don't render properly in background)
+            activate_script = Path(__file__).resolve().parent.parent.parent / "scripts" / "activate_chrome.ps1"
+            subprocess.run(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(activate_script)],
+                capture_output=True, timeout=5
+            )
+            time.sleep(2)
+            
+            # Get state & close popup (可能出现"解锁3小时"弹窗)
+            state = browser_cmd("state", timeout=20)
+            # 多次尝试关闭弹窗（有时需要关闭多层）
+            for _ in range(3):
+                if "解锁3小时" in state or "aria-label=关闭" in state or "广告" in state:
+                    close_popup(state)
+                    time.sleep(2)
+                    state = browser_cmd("state", timeout=20)
+                else:
+                    break
+            
+            # Find input & clear
+            input_idx = find_idx(state, "input type=text") or find_idx(state, "placeholder=粘贴")
+            if not input_idx:
+                logger.warning("[kukutool] Cannot find input box")
+                browser_cmd("close", timeout=5)
+                return False
+            
+            clear_idx = find_idx(state, "清除内容")
+            if clear_idx:
+                browser_cmd(f"click {clear_idx}", timeout=5)
+                time.sleep(0.5)
+            
+            # Type URL
+            browser_cmd(f'type {input_idx} "{douyin_url}"', timeout=15)
+            
+            # Click parse (may trigger ad popup, retry up to 3 times)
+            for parse_try in range(3):
+                state = browser_cmd("state", timeout=20)
+                parse_idx = find_idx(state, "开始解析")
+                if not parse_idx:
+                    browser_cmd("close", timeout=5)
+                    return False
+                
+                browser_cmd(f"click {parse_idx}", timeout=15)
+                time.sleep(4)
+                
+                # Check if ad popup appeared after clicking parse
+                state = browser_cmd("state", timeout=20)
+                if "解锁3小时" in state or "aria-label=关闭" in state or "广告" in state:
+                    close_popup(state)
+                    time.sleep(3)
+                    continue  # Re-click parse after closing ad
+                break
+            
+            # Wait for results (增加等待时间到 10 轮 x 5 秒 = 50 秒)
+            video_direct_url = None
+            # 清晰度优先级: 1080p > 720p > 540p > 超高清（超高清文件太大容易超时）
+            quality_options = ["1080p", "720p", "540p", "超高清"]
+            matched_quality = None
+            for attempt in range(10):
+                time.sleep(5)
+                state = browser_cmd("state", timeout=20)
+                close_popup(state)
+                
+                # 按优先级匹配可用的清晰度
+                for q in quality_options:
+                    if q in state:
+                        matched_quality = q
+                        break
+                
+                if matched_quality:
+                    logger.info(f"[kukutool] 解析成功，找到 {matched_quality} 选项 (第{attempt+1}轮)")
+                    # Try to copy link (may trigger ad on first attempt)
+                    for copy_try in range(3):
+                        # Re-get state each try (DOM indices change after popup close)
+                        if copy_try > 0:
+                            state = browser_cmd("state", timeout=20)
+                            close_popup(state)
+                            time.sleep(1)
+                            state = browser_cmd("state", timeout=20)
+                        
+                        lines = state.split("\n")
+                        found_quality = False
+                        copy_idx = None
+                        for line in lines:
+                            if matched_quality in line and "下载" not in line:
+                                found_quality = True
+                            # 新页面: title=复制链接 的按钮，文字是"复制"
+                            if found_quality and ("复制链接" in line or ("复制" in line and "button" in line and "批量" not in line and "所有" not in line)):
+                                m = re.search(r'\[(\d+)\]', line)
+                                if m:
+                                    copy_idx = m.group(1)
+                                break
+                        
+                        # 备选: 直接找 "复制无水印链接" 按钮
+                        if not copy_idx:
+                            for line in lines:
+                                if "复制无水印链接" in line:
+                                    m = re.search(r'\[(\d+)\]', line)
+                                    if m:
+                                        copy_idx = m.group(1)
+                                    break
+                        
+                        if not copy_idx:
+                            break
+                        
+                        browser_cmd(f"click {copy_idx}", timeout=10)
+                        time.sleep(2)
+                        
+                        # Check if ad popup appeared
+                        post_state = browser_cmd("state", timeout=15)
+                        if "解锁3小时" in post_state or "aria-label=关闭" in post_state:
+                            close_popup(post_state)
+                            time.sleep(1)
+                            continue  # Retry copy after closing ad
+                        
+                        # Read clipboard
+                        clip = subprocess.run(
+                            ["powershell", "-Command", "Get-Clipboard"],
+                            capture_output=True, text=True, timeout=5,
+                            encoding="utf-8", errors="replace"
+                        ).stdout.strip()
+                        if clip.startswith("http") and "douyin.com/video" not in clip:
+                            video_direct_url = clip
+                            break
+                    
+                    if video_direct_url:
+                        break
+                else:
+                    # 解析结果还没出来，检查是否有验证码或错误提示
+                    if "验证码" in state or "recaptcha" in state.lower():
+                        logger.warning(f"[kukutool] 等待中 (第{attempt+1}轮): 检测到验证码")
+                    elif "请输入正确" in state or "链接有误" in state:
+                        logger.warning(f"[kukutool] 链接可能无效")
+                        break
+            
+            browser_cmd("close", timeout=5)
+            
+            if not video_direct_url:
+                logger.warning("[kukutool] Failed to get video direct URL")
+                return False
+            
+            # Download
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.douyin.com/",
+            }
+            r = requests.get(video_direct_url, headers=headers, stream=True, timeout=300)
+            r.raise_for_status()
+            
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
+            
+            size_mb = output_path.stat().st_size / (1024 * 1024)
+            if size_mb < 0.1:
+                output_path.unlink(missing_ok=True)
+                return False
+            
+            logger.info(f"[kukutool] 下载成功: {size_mb:.1f}MB")
+            
+            # 记录直链到本地缓存，方便后续重新下载
+            self._save_direct_url_cache(douyin_url, video_direct_url, output_path)
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"[kukutool] Error: {e}")
+            browser_cmd("close", timeout=5)
+            return False
+    
+    def _save_direct_url_cache(self, douyin_url: str, direct_url: str, output_path: Path):
+        """记录抖音URL与解析直链的映射，方便后续重新下载"""
+        import json
+        cache_file = output_path.parent.parent / "url_cache.json"
+        try:
+            cache = {}
+            if cache_file.exists():
+                cache = json.loads(cache_file.read_text(encoding="utf-8"))
+            cache[douyin_url] = {
+                "direct_url": direct_url,
+                "output": str(output_path),
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"[kukutool] cache write error: {e}")
+    
+    def _get_douyin_cookies(self, video_url: str) -> Path | None:
+        """通过 browser 工具访问抖音获取 cookies，导出为 Netscape 格式"""
+        import ast
+        
+        cookies_path = Path(__file__).resolve().parent.parent.parent / "douyin_cookies.txt"
+        
+        # 如果 cookies 文件存在且不到 10 分钟前生成，直接复用
+        if cookies_path.exists():
+            import time
+            age = time.time() - cookies_path.stat().st_mtime
+            if age < 600:
+                return cookies_path
+        
+        try:
+            # 打开抖音视频页获取完整 cookies
+            subprocess.run(
+                ["browser", "--session", "dy_cookies", "open", video_url],
+                capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
+            
+            import time
+            time.sleep(5)
+            
+            # 获取 cookies
+            result = subprocess.run(
+                ["browser", "--session", "dy_cookies", "cookies", "get"],
+                capture_output=True, text=True, timeout=15,
+                encoding="utf-8", errors="replace",
+            )
+            
+            # 关闭 session
+            subprocess.run(
+                ["browser", "--session", "dy_cookies", "close"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+            
+            output = result.stdout.strip()
+            if "cookies:" not in output:
+                logger.warning("[downloader] browser cookies 获取失败")
+                return None
+            
+            raw = output.split("cookies:", 1)[1].strip()
+            try:
+                cookies = ast.literal_eval(raw)
+            except Exception:
+                import json
+                cookies = json.loads(raw)
+            
+            # 转换为 Netscape 格式
+            lines = ["# Netscape HTTP Cookie File", ""]
+            for c in cookies:
+                domain = c.get("domain", "")
+                if "douyin" not in domain:
+                    continue
+                inc_sub = "TRUE" if domain.startswith(".") else "FALSE"
+                secure = "TRUE" if c.get("secure") else "FALSE"
+                expires = str(int(c.get("expires", 0)))
+                name = c.get("name", "")
+                value = c.get("value", "")
+                path = c.get("path", "/")
+                lines.append(f"{domain}\t{inc_sub}\t{path}\t{secure}\t{expires}\t{name}\t{value}")
+            
+            if len(lines) <= 2:
+                logger.warning("[downloader] 未获取到有效的抖音 cookies")
+                return None
+            
+            cookies_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            logger.info(f"[downloader] 抖音 cookies 已生成: {len(lines) - 2} 条")
+            return cookies_path
+            
+        except Exception as e:
+            logger.warning(f"[downloader] browser cookies 获取异常: {e}")
             return None
     
     def _run_opencli(self, command: str) -> str:

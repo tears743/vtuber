@@ -162,3 +162,56 @@ Remove-Item "data/2026-06-24/final/hot_daily*" -Force
 # 从头开始
 powershell -ExecutionPolicy Bypass -File scripts/run_pipeline.ps1 -Date 2026-06-24 -From director
 ```
+
+---
+
+## 定时执行
+
+使用 `scripts/scheduler.ps1` 可以设置定时规则，自动跑全流程。
+
+### 交互式配置
+```powershell
+# 运行后弹出菜单，选择定时模式
+powershell -ExecutionPolicy Bypass -File scripts/scheduler.ps1
+```
+
+### Cron 表达式
+```powershell
+# 每天 8:00 自动跑
+powershell -ExecutionPolicy Bypass -File scripts/scheduler.ps1 -Cron "0 8 * * *"
+
+# 每天 8:00 和 20:00 跑两次
+powershell -ExecutionPolicy Bypass -File scripts/scheduler.ps1 -Cron "0 8,20 * * *"
+
+# 工作日 9:00 跑
+powershell -ExecutionPolicy Bypass -File scripts/scheduler.ps1 -Cron "0 9 * * 1-5"
+```
+
+### 固定间隔
+```powershell
+# 每 120 分钟跑一次（立即开始第一次）
+powershell -ExecutionPolicy Bypass -File scripts/scheduler.ps1 -Interval 120
+```
+
+### 单次定时
+```powershell
+# 今天 08:00 跑一次
+powershell -ExecutionPolicy Bypass -File scripts/scheduler.ps1 -Once "08:00"
+```
+
+### 参数
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `-Cron` | string | Cron 表达式（分 时 日 月 周） |
+| `-Interval` | int | 间隔分钟数 |
+| `-Once` | string | 单次执行时间（HH:mm） |
+| `-From` | string | Pipeline 起始步骤，默认 `collect` |
+| `-DryRun` | switch | 测试模式，不实际执行 |
+
+### 注意事项
+
+- 脚本运行期间终端窗口需要保持打开，Ctrl+C 停止
+- 日志自动保存到 `data/{date}/logs/`
+- 每小时打印心跳确认脚本在运行
+- Cron 格式：`分 时 日 月 周`（标准 5 字段）

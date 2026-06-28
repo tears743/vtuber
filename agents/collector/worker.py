@@ -83,7 +83,7 @@ Commands:
 1. Use `douyin hashtag search --keyword "<topic keyword>" --limit 5 -f json` to find related hashtags
 2. Use `browser <session> open https://www.douyin.com/search/<keyword>` if hashtag search fails
 3. Extract video URLs from search results or page (format: https://www.douyin.com/video/XXXXX)
-4. Open the video page with browser to get details (title, comments, description)
+4. Open the video page with browser to get details (title, **author name**, comments, description)
 5. Save each topic immediately with `save_data`
 
 Topics to collect:
@@ -91,6 +91,7 @@ Topics to collect:
 
 ## Save format (JSON object per topic):
 - title, source ("douyin"), content (200+ chars), hot_value, url (MUST be https://www.douyin.com/video/XXXXX format!)
+- author: "视频作者抖音昵称"  ← 必须记录！用于视频中标注素材来源
 - visual_assets: {{video_url: "<same as url, the douyin video page URL>"}}
 - top_comments: [{{user, text, likes}}] (3-5 per topic)
 - key_points: [3-5 bullet points]
@@ -98,6 +99,8 @@ Topics to collect:
 
 ## CRITICAL Rules:
 - The `url` field MUST be a valid douyin video URL like https://www.douyin.com/video/7649231660986141994
+- NEVER use search URLs like https://www.douyin.com/search/xxx — these CANNOT be parsed for video download!
+- NEVER use hashtag URLs like https://www.douyin.com/hashtag/xxx — only /video/NUMBER format is valid!
 - visual_assets.video_url MUST also contain this URL (needed for video download later)
 - Use different session names (dy1, dy2, dy3...)
 - If a topic search fails after 2 attempts, skip it and move to the next topic

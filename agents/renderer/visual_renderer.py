@@ -242,9 +242,14 @@ def render_visual_video_clip(
         range_dur = time_range[1] - time_range[0]
         duration_s = min(duration_s, range_dur)
     
-    # fade 参数
-    fade_in = 0.3
-    fade_out_start = max(0, duration_s - 0.5)
+    # fade 参数：transition: "fade" 时用更长的淡入淡出
+    if item.get("transition") == "fade":
+        fade_in = 0.5
+        fade_out_dur = 0.8
+    else:
+        fade_in = 0.3
+        fade_out_dur = 0.5
+    fade_out_start = max(0, duration_s - fade_out_dur)
 
     cmd = [
         "ffmpeg", "-y",

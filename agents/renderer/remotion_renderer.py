@@ -90,6 +90,26 @@ def render_overlay(
             overlay_items.append(overlay_item)
             # 更新区间集合
             existing_intervals.append((vis_start, vis_start + vis_dur))
+    # 自动注入 author_tag：扫描 visual 轨中有 author 字段的 video_clip/image 段
+    # 为每段生成 author_tag overlay（Remotion 渲染中文无乱码）
+    for vis in visual_items:
+        vtype = vis.get("type", "")
+        author = vis.get("author", "")
+        if vtype in ("video_clip", "image") and author:
+            vis_start = vis.get("start_ms", 0)
+            vis_dur = vis.get("duration_ms", 5000)
+            # author_tag 不参与碰撞检测（它是小标签，不会遮挡其他 overlay）
+            author_text = author if author.startswith("@") else f"@{author}"
+            overlay_items.append({
+                "start_ms": vis_start,
+                "duration_ms": vis_dur,
+                "type": "author_tag",
+                "position": "bottom-left",
+                "props": {
+                    "text": author_text,
+                    "position": "bottom-left",
+                },
+            })
 
     if not overlay_items:
         logger.info("[remotion] 无 overlay 轨，跳过渲染")

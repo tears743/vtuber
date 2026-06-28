@@ -219,6 +219,11 @@ class MediaDownloader:
             if local_path.exists() and local_path.stat().st_size > 10000:
                 return local_path
             
+            # URL 格式校验：只接受 /video/数字 格式
+            if "/video/" not in url or "/search/" in url or "/hashtag/" in url:
+                logger.warning(f"[downloader] 无效 URL 格式（非视频页），跳过: {url[:80]}")
+                return None
+            
             # 尝试1: kukutool.com 浏览器自动化下载（主要方案，最多重试10次）
             for attempt in range(10):
                 logger.info(f"[downloader] 尝试 kukutool 下载 (第{attempt+1}次): {url[:60]}")

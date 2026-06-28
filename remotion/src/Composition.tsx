@@ -1,4 +1,5 @@
 import { AbsoluteFill, Sequence } from "remotion";
+import { AuthorTag } from "./components/AuthorTag";
 import { CommentScroll } from "./components/CommentScroll";
 import { DataReveal } from "./components/DataReveal";
 import { InfoPanel } from "./components/InfoPanel";
@@ -78,6 +79,8 @@ function renderOverlayItem(item: OverlayItem, index: number, globalStyle: StyleT
   const style = item.style || globalStyle;
 
   switch (item.type) {
+    case "author_tag":
+      return <AuthorTag key={index} {...props} />;
     case "comment_scroll":
       return <CommentScroll key={index} {...props} style={style} />;
     case "data_reveal":

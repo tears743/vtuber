@@ -150,10 +150,11 @@ class MediaRecognizer:
                 else:
                     video_path_str = ""
                 
-                # 已有完整识别结果则跳过
+                # 已有完整识别结果则跳过（但被 rejected 的需要重试）
                 already_done = (isinstance(video_info, dict) 
                                 and video_info.get("duration_s") 
-                                and video_info.get("summary"))
+                                and video_info.get("summary")
+                                and "rejected" not in video_info.get("summary", "").lower())
                 
                 if video_path_str and not already_done:
                     video_path = Path(video_path_str)
@@ -162,12 +163,24 @@ class MediaRecognizer:
                     # 用 mimo 做视频内容理解
                     video_understanding = self._summarize_video(video_path, duration_s)
                     
+                    summary = video_understanding.get("summary", "")
+                    # 检测 API 安全策略拒绝
+                    is_rejected = ("rejected" in summary.lower() 
+                                   or "high risk" in summary.lower()
+                                   or "unsafe" in summary.lower())
+                    
+                    if is_rejected:
+                        logger.warning(f"[recognizer] ⚠️ API 安全策略拒绝: {video_path.name}, 将仅保留基础信息")
+                        summary = ""
+                    
                     item["video"] = {
                         "path": video_path_str,
                         "duration_s": duration_s,
-                        "summary": video_understanding.get("summary", ""),
-                        "transcript": video_understanding.get("transcript", ""),
-                        "key_moments": video_understanding.get("key_moments", []),
+                        "summary": summary,
+                        # transcript_hint: recognizer 的纯文本预估，供参考
+                        # transcript: 保留给 audio_transcriber 写入带时间戳的结构化数据
+                        "transcript_hint": video_understanding.get("transcript", "") if not is_rejected else "",
+                        "key_moments": video_understanding.get("key_moments", []) if not is_rejected else [],
                         "requires_browser": "douyin" in source_file,
                     }
             
@@ -299,6 +312,7 @@ class MediaRecognizer:
                 ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
                  "-of", "csv=p=0", str(video_path)],
                 capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
             )
             if result.returncode == 0 and result.stdout.strip():
                 return round(float(result.stdout.strip()), 1)
@@ -338,6 +352,7 @@ class MediaRecognizer:
                      "-vf", "scale=-2:720", "-c:v", "libx264", "-crf", "28",
                      "-c:a", "aac", "-b:a", "64k", str(compressed)],
                     capture_output=True, text=True, timeout=120,
+                    encoding="utf-8", errors="replace",
                 )
                 if result.returncode == 0 and compressed.exists():
                     if compressed.stat().st_size <= self.VIDEO_BASE64_MAX_BYTES:

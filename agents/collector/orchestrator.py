@@ -286,12 +286,13 @@ Respond in JSON format:
 
 Rules:
 - Weibo topics: things that need browser extraction (posts, comments, images)
-- Douyin topics: things worth finding video content for
+- Douyin topics: things worth finding video content for. SELECT AS MANY DOUYIN TOPICS AS POSSIBLE (prioritize quantity for douyin)
 - HuggingFace: papers and models (pass arxiv_id or model_id in url)
 - GitHub: repos worth describing (include ALL trending repos)
 - Each platform should get 10-20 topics (more is better)
 - Total 40-60 topics
-- We are making a hot-topic video compilation per platform, so include more rather than less"""
+- We are making a hot-topic video compilation per platform, so include more rather than less
+- IMPORTANT: Do NOT select topics that are identical or very similar to each other. Deduplicate by meaning, not just title. If two topics cover the same event/story from different angles, keep only the most interesting one."""
         
         try:
             response = self.client.chat.completions.create(

@@ -73,7 +73,12 @@ for seg in segments:
     gap = seg["start"] - buf_end
     # 断句条件: 静音间隔 > 1.5s 或 累计文字 > 50 字
     if gap > 1.5 or len(buf_text) > 50:
-        merged.append([buf_start, buf_end, buf_text])
+        merged.append({
+            "start": round(buf_start, 2),
+            "end": round(buf_end, 2),
+            "duration": round(buf_end - buf_start, 2),
+            "text": buf_text,
+        })
         buf_start = seg["start"]
         buf_end = seg["end"]
         buf_text = seg["text"]
@@ -82,11 +87,17 @@ for seg in segments:
         buf_text += seg["text"]
 
 if buf_text:
-    merged.append([buf_start, buf_end, buf_text])
+    merged.append({
+        "start": round(buf_start, 2),
+        "end": round(buf_end, 2),
+        "duration": round(buf_end - buf_start, 2),
+        "text": buf_text,
+    })
 
 result = {
     "text": "".join(text_parts),
-    "segments": merged,  # 紧凑格式: [start, end, "text"]
+    "segments": merged,
+    "raw_segments": segments,  # 原始 whisper 粒度的时间戳
     "duration_s": round(info.duration, 1),
     "elapsed_s": round(time.time() - t0, 1),
 }
@@ -129,7 +140,10 @@ class AudioTranscriber:
             if isinstance(video, str):
                 video_path = Path(video)
             elif isinstance(video, dict):
-                if video.get("transcript"):
+                # 只有当 transcript 已经是结构化数组时才跳过
+                # recognizer 写入的纯文本字符串不算（没有时间戳，不够用）
+                existing_transcript = video.get("transcript")
+                if isinstance(existing_transcript, list) and len(existing_transcript) > 0:
                     continue
                 video_path = Path(video.get("path", ""))
             else:
@@ -160,8 +174,9 @@ class AudioTranscriber:
             if isinstance(video_item, str):
                 video_item = {"path": video_item}
             
-            video_item["transcript"] = result["text"]
-            video_item["segments"] = result["segments"]
+            video_item["transcript"] = result["segments"]  # 带时间戳的结构化转录
+            video_item["transcript_text"] = result["text"]  # 纯文本备用
+            video_item["raw_segments"] = result["raw_segments"]  # whisper原始粒度
             video_item["duration_s"] = result["duration_s"]
             manifest[source_file]["video"] = video_item
             

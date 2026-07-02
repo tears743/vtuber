@@ -575,7 +575,8 @@ def _compose_studio(
             f"fade=t=out:st={fade_out_st}:d={FADE_DURATION}"
         )
 
-        # author 标签已改由 Remotion overlay 层渲染（支持中文无乱码）
+        # author 标签由 Remotion overlay 层渲染（支持中文无乱码）
+        # 注意: 如果重新 align 了脚本，需要重新渲染 overlay 才能同步时间
 
         media_filter += f",setpts=PTS+{start}/TB[media_{i}]"
         fp.append(media_filter)
@@ -787,11 +788,28 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):
     cmd = ["ffmpeg", "-y"]
     filter_parts = []
 
+    # 构建 voice 文件名 -> 允许最大时长(秒) 的映射
+    # 用于 atrim 防止 TTS 实际音频超出脚本分配时长导致重叠
+    voice_max_dur = {}
+    for vi, vitem in enumerate(voice_items):
+        audio_file = vitem.get("audio_file", "")
+        if audio_file:
+            fname = Path(audio_file).name
+            # 允许时长 = 脚本分配的 duration_ms（已是 TTS 实际 + 200ms padding）
+            voice_max_dur[fname] = vitem.get("duration_ms", 99999) / 1000.0
+
     for idx, (wav_path, start_ms) in enumerate(audio_segments):
         cmd.extend(["-i", str(wav_path)])
         
         # 检查这个音频片段是否是 TTS（voice_*.wav）还是 video_audio
         is_tts = "voice_" in wav_path.name
+        
+        # TTS 片段加 atrim 限制时长，防止超出分配时段
+        trim_filter = ""
+        if is_tts:
+            max_dur_s = voice_max_dur.get(wav_path.name, None)
+            if max_dur_s:
+                trim_filter = f"atrim=0:{max_dur_s:.3f},asetpts=PTS-STARTPTS,"
         
         if is_tts and play_audio_ranges:
             # 对 TTS 应用 volume ducking：在 play_audio 时段静音
@@ -813,12 +831,12 @@ def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):
             if duck_parts:
                 duck_expr = "+".join(duck_parts)
                 filter_parts.append(
-                    f"[{idx}:a]volume='1-min(1,{duck_expr})':eval=frame,adelay={start_ms}|{start_ms}[a{idx}]"
+                    f"[{idx}:a]{trim_filter}volume='1-min(1,{duck_expr})':eval=frame,adelay={start_ms}|{start_ms}[a{idx}]"
                 )
             else:
-                filter_parts.append(f"[{idx}:a]adelay={start_ms}|{start_ms}[a{idx}]")
+                filter_parts.append(f"[{idx}:a]{trim_filter}adelay={start_ms}|{start_ms}[a{idx}]")
         else:
-            filter_parts.append(f"[{idx}:a]adelay={start_ms}|{start_ms}[a{idx}]")
+            filter_parts.append(f"[{idx}:a]{trim_filter}adelay={start_ms}|{start_ms}[a{idx}]")
 
     n = len(filter_parts)
     mix_inputs = "".join(f"[a{i}]" for i in range(n))

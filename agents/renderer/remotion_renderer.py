@@ -47,18 +47,19 @@ def render_overlay(
     # 通过时间碰撞检测避免重复：如果 overlay 轨已有同时间段的组件则跳过
     visual_items = tracks.get("visual", [])
 
-    # 构建 overlay 轨已有时间区间集合
+    # 构建 overlay 轨已有时间区间集合（含组件类型）
     existing_intervals = []
     for ov in overlay_items:
         s = ov.get("start_ms", 0)
         e = s + ov.get("duration_ms", 0)
-        existing_intervals.append((s, e))
+        ov_type = ov.get("type", "")
+        existing_intervals.append((s, e, ov_type))
 
-    def _overlaps_existing(start_ms: int, duration_ms: int) -> bool:
-        """检查是否与已有 overlay 时间区间重叠"""
+    def _has_same_component(start_ms: int, duration_ms: int, component: str) -> bool:
+        """检查是否与已有 overlay 中相同类型的组件时间重叠"""
         end_ms = start_ms + duration_ms
-        for (es, ee) in existing_intervals:
-            if start_ms < ee and end_ms > es:
+        for (es, ee, et) in existing_intervals:
+            if start_ms < ee and end_ms > es and et == component:
                 return True
         return False
 
@@ -66,11 +67,12 @@ def render_overlay(
         if vis.get("type") == "remotion" and vis.get("component"):
             vis_start = vis.get("start_ms", 0)
             vis_dur = vis.get("duration_ms", 5000)
-            # 跳过与 overlay 轨已有条目时间重叠的 visual remotion 组件
-            if _overlaps_existing(vis_start, vis_dur):
+            vis_component = vis.get("component", "")
+            # 只有同类型组件时间重叠才跳过（避免重复渲染同一效果）
+            if _has_same_component(vis_start, vis_dur, vis_component):
                 logger.debug(
-                    f"[remotion] 跳过 visual 轨 {vis['component']} "
-                    f"({vis_start}ms) — 与 overlay 轨时间冲突"
+                    f"[remotion] 跳过 visual 轨 {vis_component} "
+                    f"({vis_start}ms) — overlay 轨已有同类型组件"
                 )
                 continue
             # 转换为 overlay 格式: component → type
@@ -89,7 +91,7 @@ def render_overlay(
             overlay_item = {k: v for k, v in overlay_item.items() if v is not None}
             overlay_items.append(overlay_item)
             # 更新区间集合
-            existing_intervals.append((vis_start, vis_start + vis_dur))
+            existing_intervals.append((vis_start, vis_start + vis_dur, vis_component))
     # 自动注入 author_tag：扫描 visual 轨中有 author 字段的 video_clip/image 段
     # 为每段生成 author_tag overlay（Remotion 渲染中文无乱码）
     for vis in visual_items:

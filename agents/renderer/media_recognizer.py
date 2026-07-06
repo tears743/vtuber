@@ -59,6 +59,7 @@ class MediaRecognizer:
         
         # ── Phase 1: 收集所有需要识别的图片任务 ──
         tasks = []  # [(source_file, img_path_str, img_path, quality)]
+        skipped = 0
         
         for source_file, item in manifest.items():
             images = item.get("images", [])
@@ -67,6 +68,11 @@ class MediaRecognizer:
                 # 兼容两种格式
                 if isinstance(img_item, dict):
                     img_path_str = img_item.get("path", "")
+                    # 缓存判断：已有有效 description 则跳过
+                    existing_desc = img_item.get("description", "")
+                    if existing_desc and not existing_desc.startswith("识别失败"):
+                        skipped += 1
+                        continue
                 else:
                     img_path_str = img_item
                 
@@ -88,6 +94,8 @@ class MediaRecognizer:
                 
                 tasks.append((source_file, img_path_str, img_path, quality))
         
+        if skipped > 0:
+            logger.info(f"[recognizer] 跳过 {skipped} 张已识别的图片（缓存命中）")
         logger.info(f"[recognizer] 共 {len(tasks)} 张图片待识别 (并发: {MAX_CONCURRENCY})")
         
         # ── Phase 2: 并发识别 ──
@@ -136,7 +144,11 @@ class MediaRecognizer:
                 
                 key = (source_file, img_path_str)
                 if key in results:
+                    # 本次新识别的，用结构化结果替换
                     recognized_images.append(results[key])
+                else:
+                    # 保留原始条目（已有 description 的缓存 或 纯路径字符串）
+                    recognized_images.append(img_item)
             
             item["images"] = recognized_images
             
@@ -187,27 +199,28 @@ class MediaRecognizer:
             # README 识别：图片识别 + 内容总结
             readme_data = item.get("readme")
             if readme_data and isinstance(readme_data, dict):
-                # 识别 README 中的图片
-                readme_images = readme_data.get("images", [])
-                recognized_readme_imgs = []
-                for img_path_str in readme_images:
-                    img_path = Path(img_path_str)
-                    if img_path.exists():
-                        quality = self._check_image_quality(img_path)
-                        if quality["usable"]:
-                            try:
-                                desc = self._recognize_image(img_path)
-                                recognized_readme_imgs.append({
-                                    "path": img_path_str,
-                                    "width": quality["width"],
-                                    "height": quality["height"],
-                                    "description": desc,
-                                })
-                            except Exception:
-                                pass
-                
-                if recognized_readme_imgs:
-                    readme_data["recognized_images"] = recognized_readme_imgs
+                # 识别 README 中的图片（已有 recognized_images 则跳过）
+                if not readme_data.get("recognized_images"):
+                    readme_images = readme_data.get("images", [])
+                    recognized_readme_imgs = []
+                    for img_path_str in readme_images:
+                        img_path = Path(img_path_str)
+                        if img_path.exists():
+                            quality = self._check_image_quality(img_path)
+                            if quality["usable"]:
+                                try:
+                                    desc = self._recognize_image(img_path)
+                                    recognized_readme_imgs.append({
+                                        "path": img_path_str,
+                                        "width": quality["width"],
+                                        "height": quality["height"],
+                                        "description": desc,
+                                    })
+                                except Exception:
+                                    pass
+                    
+                    if recognized_readme_imgs:
+                        readme_data["recognized_images"] = recognized_readme_imgs
                 
                 # 总结 README 内容
                 readme_path = Path(readme_data.get("path", ""))
@@ -392,63 +405,75 @@ class MediaRecognizer:
   "summary": "200-400字的视频内容总结，包含：主题是什么、画面展示了什么、传达了什么信息、情绪基调",
   "transcript": "如果视频中有人说话/旁白/字幕，尽可能还原完整的文字内容。如果没有语音则输出空字符串",
   "key_moments": [
-    {"time_s": 0, "description": "开头画面描述"},
-    {"time_s": 5, "description": "关键转折/重点画面"},
-    ...
+    {"start": 0, "end": 5, "duration": 5, "description": "开头画面描述（这段时间内画面展示了什么）"},
+    {"start": 5, "end": 15, "duration": 10, "description": "关键转折/重点画面描述"},
+    ...（覆盖视频全程，相邻段首尾相连）
   ]
 }
 
 要求：
 - summary 要具体描述画面内容，不要笼统概括
 - transcript 优先还原口播/字幕文字，这对脚本编剧非常重要
-- key_moments 标注 3-5 个关键时间点和对应画面
+- key_moments 必须覆盖视频**全部时长**（从0秒到结尾），分为 5-8 段，相邻段的 end 和下一段的 start 相等
+- key_moments 每段的 description 描述该时间段内的画面内容、人物动作、字幕文字等
 - 只输出 JSON，不要其他文字"""
         
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "video_url",
-                            "video_url": {
-                                "url": f"data:video/mp4;base64,{video_b64}"
+        # 重试最多 3 次
+        import re
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "video_url",
+                                "video_url": {
+                                    "url": f"data:video/mp4;base64,{video_b64}"
+                                },
+                                "fps": fps,
+                                "media_resolution": "default",
                             },
-                            "fps": fps,
-                            "media_resolution": "default",
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt,
-                        },
-                    ],
-                }],
-                max_tokens=4096,
-                temperature=0.1,
-            )
+                            {
+                                "type": "text",
+                                "text": prompt,
+                            },
+                        ],
+                    }],
+                    max_tokens=4096,
+                    temperature=0.1,
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                
+                # 尝试解析 JSON
+                json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                    logger.info(f"[recognizer] \u2705 视频理解: {video_path.name} ({len(parsed.get('summary',''))} chars)")
+                    return parsed
+                else:
+                    # 无法解析 JSON，把整段文本当 summary
+                    logger.info(f"[recognizer] 视频理解(非JSON): {video_path.name}")
+                    return {"summary": result_text[:1000], "transcript": "", "key_moments": []}
+                
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(f"[recognizer] 视频理解 attempt {attempt+1} JSON 解析失败: {video_path.name}: {e}")
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[recognizer] 视频理解 attempt {attempt+1} 异常: {video_path.name}: {e}")
             
-            result_text = response.choices[0].message.content.strip()
-            
-            # 尝试解析 JSON
-            import re
-            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group())
-                logger.info(f"[recognizer] ✅ 视频理解: {video_path.name} ({len(parsed.get('summary',''))} chars)")
-                return parsed
-            else:
-                # 无法解析 JSON，把整段文本当 summary
-                logger.info(f"[recognizer] 视频理解(非JSON): {video_path.name}")
-                return {"summary": result_text[:1000], "transcript": "", "key_moments": []}
-            
-        except Exception as e:
-            logger.warning(f"[recognizer] 视频理解失败: {video_path.name}: {e}")
-            return {}
-        finally:
-            # 清理压缩临时文件
-            if compressed and compressed.exists():
-                compressed.unlink(missing_ok=True)
+            if attempt < 2:
+                import time
+                time.sleep(2)
+        
+        logger.error(f"[recognizer] 视频理解 3 次均失败: {video_path.name}: {last_error}")
+        if compressed and compressed.exists():
+            compressed.unlink(missing_ok=True)
+        return {}
     
     def _summarize_readme(self, readme_text: str) -> str | None:
         """

@@ -140,10 +140,9 @@ class AudioTranscriber:
             if isinstance(video, str):
                 video_path = Path(video)
             elif isinstance(video, dict):
-                # 只有当 transcript 已经是结构化数组时才跳过
-                # recognizer 写入的纯文本字符串不算（没有时间戳，不够用）
-                existing_transcript = video.get("transcript")
-                if isinstance(existing_transcript, list) and len(existing_transcript) > 0:
+                # 已转录过的跳过：有 transcript_text 字段表示之前跑过转录
+                # （即使结果为空字符串也算，说明视频无人声）
+                if "transcript_text" in video:
                     continue
                 video_path = Path(video.get("path", ""))
             else:

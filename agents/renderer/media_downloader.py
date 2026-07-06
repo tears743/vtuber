@@ -43,6 +43,11 @@ class MediaDownloader:
         else:
             manifest = {}
         
+        # URL 级去重：追踪本次运行中已下载的视频 URL -> 本地路径
+        downloaded_video_urls = {}
+        # 直链级去重：追踪已使用的 direct_url（防止 kukutool 返回相同直链）
+        downloaded_direct_urls = {}
+        
         for filepath in sorted(collected_dir.glob("*.json")):
             try:
                 data = self._load_json(filepath)
@@ -92,13 +97,40 @@ class MediaDownloader:
                         video_url = data.get("url", "")
                     
                     if video_url and video_url.startswith("http"):
-                        if source == "douyin":
-                            local_path = self._download_douyin_video(video_url, item_dir)
+                        # URL 级去重：同一个视频 URL 只下载一次
+                        if video_url in downloaded_video_urls:
+                            existing["video"] = {"path": downloaded_video_urls[video_url]}
+                            logger.info(f"[downloader] {slug}: 复用已下载视频 (URL 去重)")
                         else:
-                            local_path = self._download_video(video_url, item_dir)
-                        
-                        if local_path:
-                            existing["video"] = {"path": str(local_path)}
+                            if source == "douyin":
+                                local_path = self._download_douyin_video(video_url, item_dir)
+                            else:
+                                local_path = self._download_video(video_url, item_dir)
+                            
+                            if local_path:
+                                # 直链去重：检查 url_cache 中该视频的 direct_url 是否已被使用
+                                cache_file = media_dir / "url_cache.json"
+                                is_duplicate = False
+                                if source == "douyin" and cache_file.exists():
+                                    try:
+                                        cache = json.loads(cache_file.read_text(encoding="utf-8"))
+                                        direct_url = cache.get(video_url, {}).get("direct_url", "")
+                                        if direct_url:
+                                            if direct_url in downloaded_direct_urls:
+                                                # 直链重复！kukutool 解析出了上一个视频的链接
+                                                logger.warning(
+                                                    f"[downloader] {slug}: 直链重复！与 {downloaded_direct_urls[direct_url]} 相同，删除"
+                                                )
+                                                local_path.unlink(missing_ok=True)
+                                                is_duplicate = True
+                                            else:
+                                                downloaded_direct_urls[direct_url] = slug
+                                    except Exception:
+                                        pass
+                                
+                                if not is_duplicate:
+                                    existing["video"] = {"path": str(local_path)}
+                                    downloaded_video_urls[video_url] = str(local_path)
                 
                 # GitHub README 下载
                 if source in ("github_trending", "GitHub Trending") and not existing.get("readme"):
@@ -417,6 +449,12 @@ class MediaDownloader:
                         if not copy_idx:
                             break
                         
+                        # 清空剪贴板（防止读到上一次的直链）
+                        subprocess.run(
+                            ["powershell", "-Command", "Set-Clipboard -Value ''"],
+                            capture_output=True, timeout=5,
+                        )
+                        
                         browser_cmd(f"click {copy_idx}", timeout=10)
                         time.sleep(2)
                         
@@ -433,7 +471,8 @@ class MediaDownloader:
                             capture_output=True, text=True, timeout=5,
                             encoding="utf-8", errors="replace"
                         ).stdout.strip()
-                        if clip.startswith("http") and "douyin.com/video" not in clip:
+                        # 验证：必须是 http 开头、非抖音页面 URL、且非空（剪贴板确实更新了）
+                        if clip and clip.startswith("http") and "douyin.com/video" not in clip:
                             video_direct_url = clip
                             break
                     
@@ -688,8 +727,30 @@ class MediaDownloader:
             if "shields.io" in url or "badge" in url.lower() or "img.shields" in url:
                 continue
             
+            # 跳过 SVG URL（通常以 .svg 结尾）
+            if url.lower().endswith(".svg"):
+                continue
+            
+            # 跳过 GIF（ffmpeg 合成不支持）
+            if url.lower().endswith(".gif"):
+                continue
+            
             local_path = self._download_image(url, img_dir, f"readme_img_{i:02d}")
             if local_path:
+                # 校验真实文件格式（有些 .jpg 实际是 SVG）
+                try:
+                    with open(local_path, "rb") as f:
+                        header = f.read(256)
+                    # SVG 检测：文件头包含 <svg 或 <?xml
+                    if b"<svg" in header or (b"<?xml" in header and b"<svg" in open(local_path, "rb").read(2048)):
+                        Path(local_path).unlink(missing_ok=True)
+                        continue
+                    # GIF 检测
+                    if header[:3] == b"GIF":
+                        Path(local_path).unlink(missing_ok=True)
+                        continue
+                except Exception:
+                    pass
                 images.append(str(local_path))
         
         return images

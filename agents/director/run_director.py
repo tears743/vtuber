@@ -109,6 +109,7 @@ def main():
             video_id="ai_daily",
             collected_dir=collected_dir,
             output_dir=scripts_dir,
+            rankings=selection.get("rankings", []),
         )
         if ai_script:
             scripts.append(ai_script)

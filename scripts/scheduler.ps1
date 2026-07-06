@@ -15,6 +15,7 @@ param(
     [int]$Interval = 0,
     [string]$Once = "",
     [string]$From = "collect",
+    [string]$To = "",
     [switch]$DryRun
 )
 
@@ -88,7 +89,7 @@ function Get-NextCronTime {
 # 执行 Pipeline
 # ============================================================
 function Run-Pipeline {
-    param([string]$FromStep)
+    param([string]$FromStep, [string]$ToStep)
     
     $today = Get-Date -Format "yyyy-MM-dd"
     $timestamp = Get-Date -Format "HH:mm:ss"
@@ -96,7 +97,8 @@ function Run-Pipeline {
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Magenta
     Write-Host " [Scheduler] 触发 Pipeline @ $timestamp" -ForegroundColor Magenta
-    Write-Host " Date: $today | From: $FromStep" -ForegroundColor Magenta
+    $toInfo = if ($ToStep) { " | To: $ToStep" } else { "" }
+    Write-Host " Date: $today | From: $FromStep$toInfo" -ForegroundColor Magenta
     Write-Host "============================================================" -ForegroundColor Magenta
     Write-Host ""
     
@@ -111,7 +113,9 @@ function Run-Pipeline {
     $logFile = Join-Path $logDir "pipeline_$(Get-Date -Format 'HHmmss').log"
     
     try {
-        powershell -ExecutionPolicy Bypass -File $pipelineScript -Date $today -From $FromStep 2>&1 | Tee-Object -FilePath $logFile
+        $pipeArgs = @("-ExecutionPolicy", "Bypass", "-File", $pipelineScript, "-Date", $today, "-From", $FromStep)
+        if ($ToStep) { $pipeArgs += @("-To", $ToStep) }
+        powershell @pipeArgs 2>&1 | Tee-Object -FilePath $logFile
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host ""
@@ -216,7 +220,7 @@ if ($Once) {
     Write-Host " 按 Ctrl+C 取消" -ForegroundColor DarkGray
     
     Start-Sleep -Seconds $wait.TotalSeconds
-    Run-Pipeline -FromStep $From
+    Run-Pipeline -FromStep $From -ToStep $To
     exit 0
 }
 
@@ -229,14 +233,14 @@ if ($Interval -gt 0) {
     Write-Host ""
     
     # 立即跑第一次
-    Run-Pipeline -FromStep $From
+    Run-Pipeline -FromStep $From -ToStep $To
     
     while ($true) {
         $next = (Get-Date).AddMinutes($Interval)
         Write-Host ""
         Write-Host " [Scheduler] 下次执行: $($next.ToString('HH:mm:ss')) (等待 $Interval 分钟)" -ForegroundColor DarkGray
         Start-Sleep -Seconds ($Interval * 60)
-        Run-Pipeline -FromStep $From
+        Run-Pipeline -FromStep $From -ToStep $To
     }
 }
 
@@ -255,7 +259,7 @@ if ($Cron) {
     while ($true) {
         $now = Get-Date
         if (Test-CronMatch $Cron $now) {
-            Run-Pipeline -FromStep $From
+            Run-Pipeline -FromStep $From -ToStep $To
             # 等待当前分钟过去，避免重复触发
             Start-Sleep -Seconds (60 - $now.Second)
         }

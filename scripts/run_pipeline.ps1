@@ -12,6 +12,7 @@
 param(
     [string]$Date = (Get-Date -Format "yyyy-MM-dd"),
     [string]$From = "collect",
+    [string]$To = "",
     [switch]$SkipDirector
 )
 
@@ -21,6 +22,7 @@ Write-Host "============================================================" -Foreg
 Write-Host " VideoFactory Pipeline" -ForegroundColor Cyan
 Write-Host " Date: $Date" -ForegroundColor Cyan
 Write-Host " From: $From" -ForegroundColor Cyan
+if ($To) { Write-Host " To: $To" -ForegroundColor Cyan }
 Write-Host " Skip Director: $SkipDirector" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -33,13 +35,22 @@ if ($startIdx -lt 0) {
     exit 1
 }
 
-# TTS check moved to inline (before tts step)
+# -To: 计算终止步骤
+if ($To) {
+    $endIdx = [Array]::IndexOf($steps, $To)
+    if ($endIdx -lt 0) {
+        Write-Host "[ERROR] Unknown step: $To" -ForegroundColor Red
+        Write-Host "Available: $($steps -join ', ')"
+        exit 1
+    }
+} else {
+    $endIdx = $steps.Count - 1
+}
 
-
-$total = $steps.Count - $startIdx
+$total = $endIdx - $startIdx + 1
 $current = 0
 
-for ($i = $startIdx; $i -lt $steps.Count; $i++) {
+for ($i = $startIdx; $i -le $endIdx; $i++) {
     $step = $steps[$i]
     $current++
 

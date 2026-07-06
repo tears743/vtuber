@@ -1,0 +1,177 @@
+{
+  "id": "default",
+  "name": "VideoFactory 默认管线",
+  "created_at": "2026-06-29T00:29:56.795781",
+  "updated_at": "2026-07-06T20:58:58.313469",
+  "nodes": [
+    {
+      "id": "collect_1",
+      "type": "collect",
+      "position": {
+        "x": 100,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "download_1",
+      "type": "download",
+      "position": {
+        "x": 400,
+        "y": 200
+      },
+      "config": {}
+    },
+    {
+      "id": "recognize_1",
+      "type": "recognize",
+      "position": {
+        "x": 700,
+        "y": 100
+      },
+      "config": {}
+    },
+    {
+      "id": "transcribe_1",
+      "type": "transcribe",
+      "position": {
+        "x": 700,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "director_1",
+      "type": "director",
+      "position": {
+        "x": 1000,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "tts_1",
+      "type": "tts",
+      "position": {
+        "x": 1300,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "align_1",
+      "type": "align",
+      "position": {
+        "x": 1600,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "overlay_1",
+      "type": "overlay",
+      "position": {
+        "x": 1900,
+        "y": 150
+      },
+      "config": {}
+    },
+    {
+      "id": "visual_1",
+      "type": "visual",
+      "position": {
+        "x": 1900,
+        "y": 300
+      },
+      "config": {}
+    },
+    {
+      "id": "live2d_1",
+      "type": "live2d",
+      "position": {
+        "x": 1900,
+        "y": 450
+      },
+      "config": {}
+    },
+    {
+      "id": "compose_1",
+      "type": "compose",
+      "position": {
+        "x": 2200,
+        "y": 300
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "source": "collect_1",
+      "target": "download_1"
+    },
+    {
+      "source": "download_1",
+      "target": "recognize_1"
+    },
+    {
+      "source": "download_1",
+      "target": "transcribe_1"
+    },
+    {
+      "source": "collect_1",
+      "target": "director_1"
+    },
+    {
+      "source": "recognize_1",
+      "target": "director_1"
+    },
+    {
+      "source": "transcribe_1",
+      "target": "director_1"
+    },
+    {
+      "source": "director_1",
+      "target": "tts_1"
+    },
+    {
+      "source": "tts_1",
+      "target": "align_1"
+    },
+    {
+      "source": "align_1",
+      "target": "overlay_1"
+    },
+    {
+      "source": "align_1",
+      "target": "visual_1"
+    },
+    {
+      "source": "align_1",
+      "target": "live2d_1"
+    },
+    {
+      "source": "overlay_1",
+      "target": "compose_1"
+    },
+    {
+      "source": "visual_1",
+      "target": "compose_1"
+    },
+    {
+      "source": "live2d_1",
+      "target": "compose_1"
+    },
+    {
+      "source": "download_1",
+      "target": "visual_1"
+    },
+    {
+      "source": "download_1",
+      "target": "compose_1"
+    },
+    {
+      "source": "tts_1",
+      "target": "live2d_1"
+    }
+  ]
+}

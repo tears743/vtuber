@@ -129,11 +129,46 @@ data/2026-06-24/
 
 ## 故障排查
 
-### TTS 启动失败
+### TTS 服务（VoxCPM2）
+
+**自动启动机制**：pipeline 的 TTS 节点在 health check 失败时会自动启动 WSL 中的 VoxCPM2 服务，轮询等待最多 180 秒。
+
+**启动耗时**：模型加载 + warmup 约 30-40 秒（RTX 4090）。
+
+**手动启动**（如果自动启动失败）：
 ```powershell
-# 手动启动 TTS 服务
+# 方式1：直接在终端运行（推荐，能看到输出）
 wsl -d Ubuntu -- bash -lc "cd ~ && export TORCH_MATMUL_PRECISION=high && python3 ~/tts_server.py --port 8808 --device cuda --reference-wav ~/baoer.mp3"
+
+# 方式2：用现成的 bat 脚本（会阻塞当前窗口）
+scripts\start_tts.bat
 ```
+
+**验证服务是否就绪**：
+```powershell
+python -c "import requests; r=requests.get('http://127.0.0.1:8808/health', timeout=5); print(r.status_code)"
+# 输出 200 = 正常
+```
+
+**关键文件位置（WSL 内）**：
+| 文件 | 路径 |
+|------|------|
+| TTS 服务脚本 | `~/tts_server.py` |
+| 参考音频 | `~/baoer.mp3` |
+| VoxCPM2 模型缓存 | `~/.cache/huggingface/hub/models--openbmb--VoxCPM2/` |
+| Python 环境 | 系统 python3（通过 `bash -lc` login shell 加载） |
+
+**⚠️ WSL 启动踩坑记录**：
+
+1. **不能用 `Start-Process -WindowStyle Minimized`**：最小化窗口里的 WSL 进程会被 Windows 静默杀掉，模型加载到一半就消失，没有任何报错。
+
+2. **不能用 `wsl -e bash -c`**：非 login shell 不会加载 conda/pip 环境，导致 `ModuleNotFoundError: No module named 'numpy'`。
+
+3. **必须用 `bash -lc`**（login shell）：这样才会加载 `~/.bashrc` 中的 PATH，找到 pip 安装的 torch/numpy。
+
+4. **最终方案**：`subprocess.Popen(["wsl.exe", "-d", "Ubuntu", "--", "bash", "-lc", ...], creationflags=CREATE_NEW_CONSOLE)`。用 `CREATE_NEW_CONSOLE` 给 WSL 一个独立控制台窗口，保证进程不会被杀。
+
+5. **`/home/tears/voxcpm_env/bin/python` 不可用**：这个 venv 里缺少 numpy/torch，实际环境是系统 python3 + pip 安装的包。
 
 ### 某步骤失败后恢复
 管线失败会停在出错的步骤。修复问题后用 `-From` 参数从该步骤继续：

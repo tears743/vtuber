@@ -76,6 +76,8 @@ def render_overlay(
                 )
                 continue
             # 转换为 overlay 格式: component → type
+            # position 兼容: 优先从 props 内读取，fallback 到外层
+            vis_position = vis.get("props", {}).get("position") or vis.get("position")
             overlay_item = {
                 "start_ms": vis_start,
                 "duration_ms": vis_dur,
@@ -83,7 +85,7 @@ def render_overlay(
                 "props": vis.get("props", {}),
                 "style": vis.get("style"),
                 "scale": vis.get("scale"),
-                "position": vis.get("props", {}).get("position"),
+                "position": vis_position,
                 "offsetX": vis.get("offsetX"),
                 "offsetY": vis.get("offsetY"),
             }

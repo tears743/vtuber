@@ -1,0 +1,1 @@
+Start-Process -WindowStyle Minimized -FilePath "wsl.exe" -ArgumentList "-d Ubuntu -- bash -lc `"cd ~ && export TORCH_MATMUL_PRECISION=high && python3 ~/tts_server.py --port 8808 --device cuda --reference-wav ~/baoer.mp3`""

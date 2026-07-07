@@ -1,475 +1,470 @@
 # VideoFactory 自定义节点开发规范
 
-VideoFactory 节点体系采用插件化架构，节点可以来自：
-1. **内置节点** — 随主项目分发，位于 `server/nodes/builtin/`
-2. **本地插件** — 放置在 `plugins/` 目录的独立包
-3. **Git 安装** — 通过 `vf plugins install <git-url>` 从 Git 仓库安装
-4. **pip 包** — 任何符合入口点规范的 Python 包
+> 当前分支统一使用 `node` 概念。
+> `plugin` 术语不再用于节点体系，避免和后续插件能力混淆。
+
+## 概览
+
+VideoFactory 当前节点体系支持三类节点：
+
+1. **Processor**：一次性处理节点，如 `collect`、`director`、`tts`
+2. **Trigger**：定时或周期性触发节点，如 `cron_trigger`
+3. **Listener**：长连接监听节点，如 `wechat_channel`、`feishu_channel`
+
+节点来源支持三种方式：
+
+1. **内置节点**：随主项目分发，位于 `server/nodes/` 与 `server/nodes/builtin/`
+2. **本地目录安装**：从本地 node pack 目录安装
+3. **Git / pip 安装**：从 Git 仓库或 pip 包加载 node pack
 
 ## 快速开始
 
-### 创建一个最小节点
+### 最小 Processor 节点
 
 ```python
-# plugins/my_plugin/nodes/hello.py
-from server.nodes.base import BaseNode, NodeInput, NodeOutput
+from server.nodes.base import BaseNode, NodeOutput
 from server.nodes.registry import node
 
-@node("hello_world", version="1.0.0", author="you", icon="👋")
-class HelloNode(BaseNode):
-    """向世界问好的示例节点"""
 
-    # ── 节点元信息 ──
+@node("hello_world", version="1.0.0", author="you", icon="👋", color="#4CAF50")
+class HelloNode(BaseNode):
     label = "Hello World"
     category = "示例"
-    description = "一个最简单的节点，输出问候语"
+    description = "输出一段问候语"
 
-    # ── 输入输出声明（前端据此渲染连线桩）──
-    inputs = [
-        NodeInput(name="name", type="string", label="名字",
-                  default="World", description="要问候的名字"),
-    ]
     outputs = [
         NodeOutput(name="greeting", type="string", label="问候语"),
     ]
 
-    # ── 生命周期钩子 ──
-    async def prepare(self, ctx):
-        """执行前准备资源（可选）"""
-        ctx.logger.info("准备问好...")
+    config_schema = {
+        "name": {
+            "type": "string",
+            "label": "名字",
+            "default": "World",
+            "description": "要问候的对象",
+        }
+    }
 
     async def execute(self, ctx, on_progress) -> dict:
-        """核心逻辑，返回输出字典"""
-        name = self.get_input("name")
-        on_progress("正在生成问候...", 0.5)
-        greeting = f"Hello, {name}!"
-        on_progress("完成", 1.0)
-        return {"greeting": greeting}
-
-    async def finalize(self, ctx, success: bool):
-        """执行后清理（无论成功失败都调用）"""
-        pass
+        name = self.get_config("name", "World")
+        on_progress("生成问候语...", 0.5)
+        return {"greeting": f"Hello, {name}!"}
 ```
 
-### 插件清单文件
+### 最小 Trigger 节点
 
-每个插件包根目录必须有 `vf-plugin.yaml`：
+```python
+import asyncio
+from datetime import datetime
+
+from server.nodes.base import TriggerNode, NodeOutput
+from server.nodes.registry import node
+
+
+@node("demo_trigger", version="1.0.0", icon="⏰")
+class DemoTriggerNode(TriggerNode):
+    label = "演示触发器"
+    category = "触发器"
+
+    outputs = [
+        NodeOutput(name="trigger", type="Trigger", label="触发信号"),
+    ]
+
+    config_schema = {
+        "interval_s": {"type": "int", "label": "间隔秒数", "default": 60, "min": 1}
+    }
+
+    async def listen(self, ctx, emit):
+        while True:
+            await asyncio.sleep(self.get_config("interval_s", 60))
+            await emit({"triggered_at": datetime.now().isoformat()})
+```
+
+### 最小 Listener 节点
+
+```python
+from server.nodes.base import ListenerNode, NodeInput, NodeOutput
+from server.nodes.registry import node
+
+
+@node("demo_listener", version="1.0.0", icon="📡")
+class DemoListenerNode(ListenerNode):
+    label = "演示监听器"
+    category = "监听器"
+    bidirectional = True
+
+    inputs = [
+        NodeInput(name="reply", type="Reply", label="回复内容", connected=True),
+    ]
+    outputs = [
+        NodeOutput(name="message", type="Message", label="收到的消息"),
+    ]
+
+    async def listen(self, ctx, emit):
+        event = {"message": {"text": "hello from listener"}}
+        await emit(event)
+
+    async def send_reply(self, ctx, reply_data):
+        ctx.logger.info(f"reply => {reply_data}")
+```
+
+## 节点包结构
+
+每个 node pack 根目录需要一个 `vf-node.yaml` 清单：
 
 ```yaml
-# plugins/my_plugin/vf-plugin.yaml
-name: my_plugin
+name: my_nodes
 version: 1.0.0
 author: Your Name <you@example.com>
 description: 我的自定义节点包
-homepage: https://github.com/you/my-vf-plugin
+homepage: https://github.com/you/my-vf-nodes
 license: MIT
 
-# 节点入口（可多个）
 nodes:
-  - path: nodes/hello.py        # 相对路径
-  - path: nodes/goodbye.py
+  - path: nodes/hello.py
+  - path: nodes/demo_trigger.py
 
-# 依赖声明（可选）
 dependencies:
   python:
     - requests>=2.28
   system:
     - ffmpeg
+  vf: ">=0.1.0"
 
-# 前端扩展（可选）
 web:
-  entry: web/index.js           # 前端 JS 扩展入口
+  entry: web/index.js
+
+changelog:
+  1.0.0: "初始版本"
 ```
 
-## 节点生命周期
+## 生命周期
 
-节点执行遵循严格的生命周期顺序：
+所有 Processor 节点遵循统一生命周期：
 
-```
+```text
 prepare(ctx)
-    │  资源初始化（连接服务、加载模型、创建临时目录）
-    │  失败 → 跳过 execute，直接进入 finalize
-    ▼
-validate(ctx)
-    │  检查上游数据是否就绪
-    │  失败 → 跳过 execute（状态 SKIPPED），进入 finalize
-    ▼
-check_cache(ctx)
-    │  检查产出缓存
-    │  命中 → restore_cache(ctx)，跳过 execute，进入 finalize
-    ▼
-execute(ctx, on_progress)
-    │  核心逻辑，通过 on_progress 上报进度
-    │  返回 dict 作为 outputs
-    │  失败 → on_error(ctx, error)，进入 finalize
-    ▼
-finalize(ctx, success)
-    │  清理资源（关闭连接、删除临时文件、释放 GPU）
-    │  无论成功失败都调用
-    ▼
-[完成]
+  -> validate(ctx)
+  -> check_cache(ctx)
+  -> restore_cache(ctx)   # 仅缓存命中时
+  -> execute(ctx, on_progress)
+  -> on_error(ctx, error) # 仅 execute 异常时
+  -> finalize(ctx, success)
 ```
 
 ### 生命周期钩子说明
 
 | 钩子 | 必需 | 调用时机 | 用途 |
 |------|------|---------|------|
-| `prepare(ctx)` | 否 | execute 前 | 初始化资源、健康检查、启动外部服务 |
-| `validate(ctx)` | 否 | prepare 后 | 校验上游数据，返回错误列表 |
-| `check_cache(ctx)` | 否 | validate 后 | 自定义缓存命中逻辑 |
-| `restore_cache(ctx)` | 否 | 缓存命中时 | 从磁盘恢复产出 |
-| `execute(ctx, on_progress)` | **是** | 核心执行 | 业务逻辑，返回 outputs dict |
-| `on_error(ctx, error)` | 否 | execute 抛异常时 | 错误处理、回滚 |
-| `finalize(ctx, success)` | 否 | 最后调用 | 资源清理 |
+| `prepare(ctx)` | 否 | 执行前 | 初始化外部资源、做健康检查 |
+| `validate(ctx)` | 否 | `prepare` 后 | 校验上游数据与当前配置 |
+| `check_cache(ctx)` | 否 | `validate` 后 | 自定义缓存命中逻辑 |
+| `restore_cache(ctx)` | 否 | 缓存命中时 | 从磁盘恢复运行产出 |
+| `execute(ctx, on_progress)` | 是 | 核心执行 | 返回 outputs dict |
+| `on_error(ctx, error)` | 否 | 执行异常时 | 回滚、副作用清理 |
+| `finalize(ctx, success)` | 否 | 最后执行 | 释放连接、临时文件、显存 |
 
-## 输入输出声明
+Trigger / Listener 节点不走 `execute()` 主路径，而是实现 `listen(ctx, emit)`。
 
-### NodeInput
+## 输入输出与配置分离
 
-```python
-NodeInput(
-    name="model_name",          # 唯一标识（snake_case）
-    type="string",              # 类型：string/int/float/bool/list/dict/model/file/path
-    label="模型名称",            # 前端显示名
-    default="deepseek-v4-flash",# 默认值
-    required=True,              # 是否必填
-    description="要使用的LLM模型", # 描述文本
-    options=None,               # 枚举选项列表 ["a", "b", "c"]
-    min=None,                   # 数值最小值
-    max=None,                   # 数值最大值
-    step=None,                  # 数值步长
-    hidden=False,               # 是否隐藏（不在UI显示，仅内部传递）
-    group="basic",              # 参数分组（前端折叠面板）
-)
-```
+当前体系里，**连线桩** 和 **前端配置项** 是两套定义，必须分开：
 
-### NodeOutput
+- `inputs` / `outputs`：给画布连线用
+- `config_schema`：给右侧属性面板用
+
+### 连线桩示例
 
 ```python
-NodeOutput(
-    name="scripts",             # 唯一标识
-    type="ScriptsData",         # 类型名（用于连线类型检查）
-    label="脚本",               # 前端显示名
-    description="生成的视频脚本",
-)
+inputs = [
+    NodeInput(
+        name="collected",
+        type="CollectedData",
+        label="采集数据",
+        connected=True,
+        description="来自上游采集节点",
+    )
+]
+
+outputs = [
+    NodeOutput(name="scripts", type="ScriptsData", label="脚本"),
+]
 ```
 
-### 类型系统
+### 配置项示例
 
-连线时前端会检查输出类型与输入类型是否兼容：
+```python
+config_schema = {
+    "orchestrator_model": {
+        "type": "model",
+        "label": "编排模型",
+        "default": "deepseek-v4-flash",
+    },
+    "max_workers": {
+        "type": "int",
+        "label": "并发数",
+        "default": 4,
+        "min": 1,
+        "max": 8,
+    },
+}
+```
 
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| `string` | 字符串 | 模型名、提示词 |
-| `int` / `float` | 数值 | 并发数、温度 |
-| `bool` | 布尔 | 开关选项 |
-| `list` / `dict` | 集合 | 话题列表、配置 |
-| `model` | 模型选择 | deepseek-v4-flash |
-| `file` / `path` | 文件路径 | 背景图、参考音频 |
-| `CollectedData` | 采集产出 | 管线内置类型 |
-| `MediaData` | 媒体产出 | 管线内置类型 |
-| `ScriptsData` | 脚本产出 | 管线内置类型 |
-| 自定义类型 | 插件定义 | 任何 dataclass 名 |
+### 字段类型
 
-类型兼容规则：
-- 完全匹配：`string` ↔ `string`
-- 子类型：`int` 可连接到 `float`
-- 通配：`any` 接受任何类型
-- 插件可注册自定义类型及其继承关系
+| type | UI 形态 | 示例 |
+|------|---------|------|
+| `string` | 文本输入 | token、路径 |
+| `int` / `float` | 数字输入 | 并发数、温度 |
+| `bool` | 开关 | enable_cache |
+| `list` | 列表输入 | platforms |
+| `enum` | 下拉框 | codec |
+| `model` | 模型下拉框 | deepseek-v4-flash |
+| `text` | 大文本编辑器 | prompt |
+| `file` / `path` | 路径输入 | 参考音频、素材路径 |
+| 自定义类型 | 连线类型 | `CollectedData`、`Reply` |
 
 ## 数据传递
 
-节点间通过 `PipelineContext` 传递数据。每个节点通过 `inputs` 声明从上游读取什么，通过 `execute` 返回值声明写入什么：
+### 方式一：声明式连线
 
 ```python
-@node("my_node")
+from server.nodes.base import BaseNode, NodeInput, NodeOutput
+
+
 class MyNode(BaseNode):
     inputs = [
-        NodeInput(name="collected", type="CollectedData",
-                  label="采集数据", connected=True),  # connected=True 表示来自上游节点
+        NodeInput(name="collected", type="CollectedData", connected=True),
     ]
     outputs = [
-        NodeOutput(name="result", type="MyResult", label="结果"),
+        NodeOutput(name="result", type="MyResult"),
     ]
 
     async def execute(self, ctx, on_progress) -> dict:
-        # 从 ctx 读取上游产出
-        collected = self.get_input("collected")  # 自动从 ctx 解析
-
-        # 也可以直接访问 ctx.data
-        all_upstream = ctx.data  # {"upstream_node_id:output_name": value}
-
-        # 返回产出
-        return {"result": my_result}
+        collected = self.get_input("collected")
+        return {"result": process(collected)}
 ```
 
-## 前后端通信协议
+### 方式二：直接访问上下文仓库
 
-### 节点定义 API
+```python
+async def execute(self, ctx, on_progress) -> dict:
+    latest_scripts = ctx.find_latest_by_type("ScriptsData")
+    raw_value = ctx.read("collect_1", "collected")
+    return {"result": raw_value}
+```
 
-`GET /api/nodes` 返回所有已注册节点的完整定义：
+### 方式三：消息总线
+
+```python
+async def execute(self, ctx, on_progress) -> dict:
+    ctx.emit("download_progress", {"done": 3, "total": 10})
+    return {"result": "ok"}
+```
+
+## 缓存语义
+
+### 默认行为
+
+- `cacheable = False`：默认不缓存
+- 适用于 LLM 节点、通道节点、外部实时事件节点
+
+### 显式缓存
+
+节点需要缓存时，显式声明：
+
+```python
+class DownloadNode(BaseNode):
+    cacheable = True
+
+    def fingerprint(self, ctx) -> str:
+        collected = self.get_input("collected")
+        payload = {
+            "config": self.config,
+            "files": collected.files,
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+```
+
+### 自定义缓存命中
+
+对于不能只靠 `fingerprint()` 的节点，允许覆写 `check_cache()`。
+
+当前内置 `collect` 节点就是这种情况：
+
+- 按 `date + enabled platforms` 判断缓存命中
+- 只有当前日期下，所选站点都已经有采集产物时才跳过采集
+- 例如只选了 `weibo` 与 `github`，则这两个站点当天都产出过 `YYYY-MM-DD_<platform>_*.json` 才算命中
+
+## 运行模式
+
+工作流 `mode` 支持三种：
+
+| mode | 说明 | 典型入口 |
+|------|------|----------|
+| `manual` | 用户点击运行，一次性执行 DAG | 普通生产工作流 |
+| `scheduled` | Trigger 节点长驻，到点触发下游子图 | `cron_trigger` |
+| `listener` | Listener 节点常驻，收到事件触发下游 | `wechat_channel` |
+
+## 前后端协议
+
+### `GET /api/nodes`
+
+后端返回当前节点定义、节点包和全局配置：
 
 ```json
 {
   "nodes": [
     {
-      "type": "hello_world",
-      "label": "Hello World",
-      "category": "示例",
-      "description": "一个最简单的节点",
+      "type": "collect",
+      "label": "数据采集",
+      "category": "数据采集",
       "version": "1.0.0",
-      "author": "you",
-      "icon": "👋",
-      "color": "#4CAF50",
-      "inputs": [
-        {
-          "name": "name",
-          "type": "string",
-          "label": "名字",
-          "default": "World",
-          "required": true,
-          "description": "要问候的名字",
-          "group": "basic",
-          "connected": false
-        }
-      ],
+      "node_kind": "processor",
+      "node_pack": "builtin",
+      "inputs": [],
       "outputs": [
-        {
-          "name": "greeting",
-          "type": "string",
-          "label": "问候语",
-          "description": ""
-        }
+        {"name": "collected", "type": "CollectedData", "label": "采集数据"}
       ],
-      "config_schema": {},
-      "deprecated": false,
-      "plugin": "my_plugin"
+      "config_schema": {
+        "platforms": {
+          "type": "list",
+          "label": "启用平台",
+          "default": ["weibo", "douyin", "github", "huggingface"]
+        }
+      }
     }
   ],
-  "plugins": [
-    {
-      "name": "my_plugin",
-      "version": "1.0.0",
-      "author": "you",
-      "description": "我的自定义节点包"
-    }
-  ]
+  "node_packs": [],
+  "global_config": {
+    "models": ["deepseek-v4-flash", "gemma-local", "mimo-v2.5"]
+  }
 }
 ```
 
-### 运行时事件 (WebSocket)
+### WebSocket 运行时事件
 
-```
-run_start     {run_id, workflow_id}
+```text
+run_start     {run_id, mode}
 node_start    {node_id, type}
 node_progress {node_id, progress, message}
-node_complete {node_id, duration_s, outputs_summary}
+node_complete {node_id, duration_s}
 node_error    {node_id, error}
 node_cached   {node_id}
 node_skipped  {node_id, reason}
-log           {node_id, level, message, timestamp}
-run_end       {run_id, status, ...}
+log           {node_id, level, message, logger, timestamp}
+run_end       {run_id, status, node_states, ...}
 run_stopped   {run_id}
 ```
 
-## 插件安装
+## 节点包安装与管理
 
-### 从本地目录安装
+当前分支的节点包管理入口是后端 API，不再使用旧 `vf plugins` 命令。
 
-```bash
-# 软链接本地开发中的插件
-vf plugins link /path/to/my_plugin
+### 安装来源
+
+```text
+POST /api/node-packs/install
+{
+  "source": "https://github.com/you/my-vf-nodes.git"
+}
 ```
 
-### 从 Git 安装
+也可以传本地路径或 pip 包名：
 
-```bash
-# 安装到 plugins/ 目录
-vf plugins install https://github.com/you/my-vf-plugin.git
-
-# 安装指定分支/tag
-vf plugins install https://github.com/you/my-vf-plugin.git@v1.2.0
+```text
+POST /api/node-packs/install
+{
+  "source": "D:/workspace/my-vf-nodes"
+}
 ```
 
-### 从 pip 安装
+### 管理接口
 
-```bash
-# 任何符合 vf-node 插件入口点的包
-pip install vf-plugin-awesome
-vf plugins enable vf-plugin-awesome
-```
-
-### 管理节点包
-
-```bash
-# 通过 API 管理节点包
-GET    /api/node-packs              # 列出所有节点包
-GET    /api/node-packs/updates      # 检查可用更新
-POST   /api/node-packs/install      # 安装 {source: "git url" | "local path" | "pip name"}
+```text
+GET    /api/node-packs
+GET    /api/node-packs/updates
+POST   /api/node-packs/install
 POST   /api/node-packs/{name}/update
 POST   /api/node-packs/{name}/enable
 POST   /api/node-packs/{name}/disable
 DELETE /api/node-packs/{name}
 ```
 
-## 节点包版本管理
+## 版本与迁移
 
-### 版本声明
-
-- **节点包级版本**：`vf-node.yaml` 的 `version` 字段（语义化版本 semver）
-- **节点级版本**：`@node(type, version="1.0.0")` 装饰器参数
-
-### 更新检测
-
-系统会自动检查 Git 安装的节点包是否有新版本（通过 `git ls-remote --tags`）：
-
-```python
-# API 检查更新
-GET /api/node-packs/updates
-# 返回: {"updates": [{"name": "my_nodes", "current_version": "1.0.0", "latest_version": "1.1.0", "changelog": "..."}]}
-
-# 执行更新
-POST /api/node-packs/my_nodes/update
-```
-
-### 配置迁移
-
-节点版本升级时，如果 config 格式有变化，实现 `migrate_config` 方法：
+- **节点包级版本**：`vf-node.yaml` 中的 `version`
+- **节点级版本**：`@node(..., version="1.0.0")`
+- **配置迁移入口**：`migrate_config(old_version, config)`
 
 ```python
 @node("my_node", version="2.0.0")
 class MyNode(BaseNode):
     @classmethod
     def migrate_config(cls, old_version: str, config: dict) -> dict:
-        if old_version < "2.0.0":
-            # v1.x 的 old_param 改名为 new_param
-            if "old_param" in config:
-                config["new_param"] = config.pop("old_param")
+        if old_version < "2.0.0" and "old_param" in config:
+            config["new_param"] = config.pop("old_param")
         return config
 ```
 
-## 触发器/监听器节点
-
-除了一般的处理节点（Processor），系统支持两种特殊节点类型：
-
-### 定时触发器（Trigger）
-
-```python
-@node("my_cron", icon="⏰")
-class MyCronTrigger(TriggerNode):
-    """到时间触发下游"""
-
-    outputs = [NodeOutput(name="trigger", type="Trigger")]
-
-    config_schema = {
-        "schedule": {"type": "string", "default": "0 8 * * *"}
-    }
-
-    async def listen(self, ctx, emit):
-        while True:
-            await asyncio.sleep(self._calc_interval())
-            await emit({"triggered_at": datetime.now().isoformat()})
-```
-
-### 长连接监听器（Listener）
-
-```python
-@node("my_channel", icon="📡")
-class MyChannel(ListenerNode):
-    """长连接监听消息"""
-
-    bidirectional = True  # 双向通道（需要回复）
-
-    outputs = [NodeOutput(name="message", type="Message")]
-    config_schema = {
-        "token": {"type": "string", "required": True}
-    }
-
-    async def listen(self, ctx, emit):
-        # 长轮询 / WebSocket / SDK 监听
-        while True:
-            msg = await self._poll_messages()
-            await emit({"message": msg})
-
-    async def send_reply(self, ctx, reply_data):
-        # 发送回复
-        await self._send(reply_data)
-```
-
-内置监听器节点：
-- `wechat_channel` — 微信（iLink 协议长轮询）
-- `feishu_channel` — 飞书（WebSocket 长连接）
-- `dingtalk_channel` — 钉钉（Stream 模式）
-
 ## 目录结构
 
-```
-videoFactory/
-├── nodes/                       # 社区节点包目录
-│   └── community/               # Git/本地安装的节点包
-│       └── my_nodes/
-│           ├── vf-node.yaml     # 节点包清单
-│           ├── nodes/
-│           │   └── hello.py
-│           └── web/             # 前端扩展（可选）
+```text
+videoFactory-node-opt/
 ├── server/
+│   ├── api/
+│   │   ├── nodes.py
+│   │   ├── node_packs.py
+│   │   └── runs.py
+│   ├── engine/
+│   │   └── executor.py
 │   ├── nodes/
-│   │   ├── builtin/             # 内置节点
-│   │   │   ├── cron_trigger.py
-│   │   │   ├── wechat_channel.py
-│   │   │   ├── feishu_channel.py
-│   │   │   ├── dingtalk_channel.py
-│   │   │   └── ...
-│   │   ├── base.py              # BaseNode + NodeInput + NodeOutput
-│   │   ├── registry.py          # @node 装饰器 + 自动发现
-│   │   ├── loader.py            # 节点包加载器
-│   │   └── pack_manager.py      # 版本管理 + 更新检测
-│   └── engine/
-│       └── executor.py          # 执行引擎（edges + 并发 + 三种模式）
-└── ...
+│   │   ├── base.py
+│   │   ├── registry.py
+│   │   ├── loader.py
+│   │   ├── pack_manager.py
+│   │   ├── builtin/
+│   │   └── community/
+│   └── models.py
+├── web/
+│   └── src/
+├── workflows/
+└── docs/
 ```
 
 ## 最佳实践
 
-### 1. 不要求幂等
-LLM 节点每次调用可能返回不同结果，默认 `cacheable = False`。需要缓存的节点显式声明并实现 `fingerprint()`。
+### 1. 配置和连线分离
 
-### 2. 进度上报
-长任务必须调用 `on_progress(message, progress)` 上报进度，让前端能看到实时状态：
+- 不要把前端配置项写进 `inputs`
+- 不要依赖旧的“自动把 `config_schema` 转输入桩”思路
 
-```python
-async def execute(self, ctx, on_progress):
-    items = self.get_input("items")
-    for i, item in enumerate(items):
-        on_progress(f"处理第 {i+1}/{len(items)} 项", i / len(items))
-        await process(item)
-    on_progress("完成", 1.0)
-```
-
-### 3. 资源清理
-所有在 `prepare` 中获取的资源必须在 `finalize` 中释放：
-
-```python
-async def prepare(self, ctx):
-    self._tmpdir = tempfile.mkdtemp()
-    self._client = SomeClient()
-
-async def finalize(self, ctx, success):
-    await self._client.close()
-    shutil.rmtree(self._tmpdir, ignore_errors=True)
-```
-
-### 4. 缓存友好
-缓存基于 `node_type + config + upstream_outputs_hash` 自动计算。如果节点产出不依赖外部副作用（时间、随机数），缓存会自动生效。否则重写 `check_cache` 返回 `False`。
-
-### 5. 错误处理
-`execute` 抛异常会被引擎捕获并标记节点失败。对于可恢复错误，在 `on_error` 中处理；对于不可恢复错误，直接抛出。
-
-### 6. 日志
-使用 `ctx.logger` 而非 `print` 或全局 `logging`，确保日志隔离到当前运行：
+### 2. 只用 `ctx.logger`
 
 ```python
 async def execute(self, ctx, on_progress):
     ctx.logger.info("开始处理")
-    ctx.logger.debug(f"输入参数: {self.config}")
+    ctx.logger.debug(f"config={self.config}")
 ```
+
+### 3. 长任务必须上报进度
+
+```python
+async def execute(self, ctx, on_progress):
+    for i, item in enumerate(items):
+        on_progress(f"处理第 {i + 1}/{len(items)} 项", i / len(items))
+```
+
+### 4. 在 `finalize` 里清理资源
+
+```python
+async def finalize(self, ctx, success):
+    if self._client:
+        await self._client.close()
+```
+
+### 5. 非幂等节点默认别缓存
+
+- LLM 节点默认 `cacheable = False`
+- 只有缓存语义足够明确时才打开缓存
+- 需要精细命中条件时，优先覆写 `check_cache()`

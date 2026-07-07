@@ -36,6 +36,7 @@ class CollectNode(BaseNode):
     reads = []
     writes = ["collected"]
     output_dirs = ["collected"]
+    cacheable = True
 
     # 失败策略：采集失败可以跳过（用缓存数据）
     on_failure = "skip"
@@ -100,6 +101,63 @@ class CollectNode(BaseNode):
         },
     }
 
+    SUPPORTED_PLATFORMS = {"weibo", "douyin", "github", "huggingface"}
+
+    def _get_enabled_platforms(self) -> list[str]:
+        platforms = self.get_config("platforms", ["weibo", "douyin", "github", "huggingface"])
+        if not isinstance(platforms, list):
+            return ["weibo", "douyin", "github", "huggingface"]
+
+        enabled = []
+        for platform in platforms:
+            name = str(platform).strip().lower()
+            if name in self.SUPPORTED_PLATFORMS and name not in enabled:
+                enabled.append(name)
+        return enabled or ["weibo", "douyin", "github", "huggingface"]
+
+    def _get_platform_files(self, data_dir: Path, date_str: str, platform: str) -> list[str]:
+        pattern = f"{date_str}_{platform}_*.json"
+        return sorted(f.name for f in data_dir.glob(pattern) if f.is_file())
+
+    def _build_collected_data(self, data_dir: Path) -> CollectedData:
+        files = sorted(f.name for f in data_dir.glob("*.json") if f.is_file())
+        platforms = {}
+        for filename in files:
+            parts = Path(filename).stem.split("_", 2)
+            if len(parts) >= 3 and parts[1] in self.SUPPORTED_PLATFORMS:
+                platforms[parts[1]] = platforms.get(parts[1], 0) + 1
+
+        return CollectedData(
+            dir=data_dir,
+            files=files,
+            count=len(files),
+            platforms=platforms,
+        )
+
+    async def check_cache(self, ctx: PipelineContext) -> bool:
+        """按日期+站点判断缓存命中。
+
+        只有当前日期下所选站点都已经产出过文件时，才跳过整次采集。
+        """
+        data_dir = ctx.data_root / ctx.date / "collected"
+        if not data_dir.exists():
+            return False
+
+        enabled_platforms = self._get_enabled_platforms()
+        missing = [
+            platform
+            for platform in enabled_platforms
+            if not self._get_platform_files(data_dir, ctx.date, platform)
+        ]
+        if missing:
+            logger.info(f"[{self.id}] collect 缓存未命中，缺少站点: {', '.join(missing)}")
+            return False
+
+        logger.info(
+            f"[{self.id}] collect 缓存命中: date={ctx.date}, platforms={enabled_platforms}"
+        )
+        return True
+
     async def execute(self, ctx: PipelineContext, on_progress):
         """执行数据采集"""
         import sys
@@ -113,6 +171,7 @@ class CollectNode(BaseNode):
         config = ctx.config or load_config()
         orchestrator_cfg = get_model_config(config, "orchestrator")
         worker_cfg = get_model_config(config, "worker")
+        enabled_platforms = self._get_enabled_platforms()
 
         # 覆盖模型配置（如果节点上选了不同模型）
         models = config.get("models", {})
@@ -149,43 +208,18 @@ class CollectNode(BaseNode):
             opencli_binary=opencli,
             data_dir=data_dir,
             max_workers=self.get_config("max_workers", 4),
+            enabled_platforms=enabled_platforms,
         )
 
-        on_progress("采集中...", 0.2)
+        on_progress(f"采集中... ({', '.join(enabled_platforms)})", 0.2)
         import asyncio
         await asyncio.to_thread(orchestrator.run)
         on_progress("采集完成", 0.9)
 
-        # 构建 CollectedData
-        files = sorted([f.name for f in data_dir.glob("*.json")])
-        platforms = {}
-        for f in files:
-            parts = f.split("_")
-            if len(parts) >= 3:
-                platform = parts[2] if parts[2] not in ("topic", "hot") else parts[1]
-                platforms[platform] = platforms.get(platform, 0) + 1
+        ctx.collected = self._build_collected_data(data_dir)
+        on_progress(f"采集完成: {ctx.collected.count} 条", 1.0)
 
-        ctx.collected = CollectedData(
-            dir=data_dir,
-            files=files,
-            count=len(files),
-            platforms=platforms,
-        )
-        on_progress(f"采集完成: {len(files)} 条", 1.0)
-
-    def restore_cache(self, ctx):
+    async def restore_cache(self, ctx):
         """从磁盘恢复 collected 数据"""
         data_dir = ctx.data_root / ctx.date / "collected"
-        files = sorted([f.name for f in data_dir.glob("*.json")])
-        platforms = {}
-        for f in files:
-            parts = f.split("_")
-            if len(parts) >= 3:
-                platform = parts[2] if parts[2] not in ("topic", "hot") else parts[1]
-                platforms[platform] = platforms.get(platform, 0) + 1
-        ctx.collected = CollectedData(
-            dir=data_dir,
-            files=files,
-            count=len(files),
-            platforms=platforms,
-        )
+        ctx.collected = self._build_collected_data(data_dir)

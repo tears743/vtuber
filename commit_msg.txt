@@ -1,8 +1,10 @@
-feat: 节点体系重构阶段三 — 节点生态（加载器/版本管理/API）
+feat: 节点体系重构阶段四五 — 引擎容错 + 节点迁移 + 文档完善
 
-新增：
-- NodePackLoader: 支持 builtin/community/pip 三种来源自动加载
-- NodePackManager: 版本检测(git ls-remote) + 更新(git pull/pip upgrade) + semver 比较
-- node_packs API: install/update/enable/disable/remove 全套 CRUD
-- nodes API 增强: 返回 global_config.models 供前端 model 下拉框
-- run_server.py: 自动发现 + 旧节点兼容 + node_packs 路由注册
+阶段四（可靠性）：
+- executor retry 逻辑（on_failure=retry/skip/abort + max_retries + retry_delay）
+- dry_run 和 resume_from_node 已在阶段一实现
+
+阶段五（迁移 + 文档）：
+- collect 节点迁移示例（新增 icon/version/outputs/on_failure 等新特性）
+- CUSTOM_NODES.md 补充版本管理/配置迁移/触发器/监听器章节
+- 文档命名统一为 node（不使用 plugin）

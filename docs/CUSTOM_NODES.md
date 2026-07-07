@@ -299,50 +299,140 @@ pip install vf-plugin-awesome
 vf plugins enable vf-plugin-awesome
 ```
 
-### 管理插件
+### 管理节点包
 
 ```bash
-vf plugins list              # 列出已安装插件
-vf plugins disable my_plugin # 禁用
-vf plugins enable my_plugin  # 启用
-vf plugins update my_plugin  # 更新（git pull）
-vf plugins remove my_plugin  # 卸载
+# 通过 API 管理节点包
+GET    /api/node-packs              # 列出所有节点包
+GET    /api/node-packs/updates      # 检查可用更新
+POST   /api/node-packs/install      # 安装 {source: "git url" | "local path" | "pip name"}
+POST   /api/node-packs/{name}/update
+POST   /api/node-packs/{name}/enable
+POST   /api/node-packs/{name}/disable
+DELETE /api/node-packs/{name}
 ```
+
+## 节点包版本管理
+
+### 版本声明
+
+- **节点包级版本**：`vf-node.yaml` 的 `version` 字段（语义化版本 semver）
+- **节点级版本**：`@node(type, version="1.0.0")` 装饰器参数
+
+### 更新检测
+
+系统会自动检查 Git 安装的节点包是否有新版本（通过 `git ls-remote --tags`）：
+
+```python
+# API 检查更新
+GET /api/node-packs/updates
+# 返回: {"updates": [{"name": "my_nodes", "current_version": "1.0.0", "latest_version": "1.1.0", "changelog": "..."}]}
+
+# 执行更新
+POST /api/node-packs/my_nodes/update
+```
+
+### 配置迁移
+
+节点版本升级时，如果 config 格式有变化，实现 `migrate_config` 方法：
+
+```python
+@node("my_node", version="2.0.0")
+class MyNode(BaseNode):
+    @classmethod
+    def migrate_config(cls, old_version: str, config: dict) -> dict:
+        if old_version < "2.0.0":
+            # v1.x 的 old_param 改名为 new_param
+            if "old_param" in config:
+                config["new_param"] = config.pop("old_param")
+        return config
+```
+
+## 触发器/监听器节点
+
+除了一般的处理节点（Processor），系统支持两种特殊节点类型：
+
+### 定时触发器（Trigger）
+
+```python
+@node("my_cron", icon="⏰")
+class MyCronTrigger(TriggerNode):
+    """到时间触发下游"""
+
+    outputs = [NodeOutput(name="trigger", type="Trigger")]
+
+    config_schema = {
+        "schedule": {"type": "string", "default": "0 8 * * *"}
+    }
+
+    async def listen(self, ctx, emit):
+        while True:
+            await asyncio.sleep(self._calc_interval())
+            await emit({"triggered_at": datetime.now().isoformat()})
+```
+
+### 长连接监听器（Listener）
+
+```python
+@node("my_channel", icon="📡")
+class MyChannel(ListenerNode):
+    """长连接监听消息"""
+
+    bidirectional = True  # 双向通道（需要回复）
+
+    outputs = [NodeOutput(name="message", type="Message")]
+    config_schema = {
+        "token": {"type": "string", "required": True}
+    }
+
+    async def listen(self, ctx, emit):
+        # 长轮询 / WebSocket / SDK 监听
+        while True:
+            msg = await self._poll_messages()
+            await emit({"message": msg})
+
+    async def send_reply(self, ctx, reply_data):
+        # 发送回复
+        await self._send(reply_data)
+```
+
+内置监听器节点：
+- `wechat_channel` — 微信（iLink 协议长轮询）
+- `feishu_channel` — 飞书（WebSocket 长连接）
+- `dingtalk_channel` — 钉钉（Stream 模式）
 
 ## 目录结构
 
 ```
 videoFactory/
-├── plugins/                     # 用户安装的插件目录
-│   ├── my_plugin/
-│   │   ├── vf-plugin.yaml       # 插件清单
-│   │   ├── nodes/
-│   │   │   ├── __init__.py
-│   │   │   └── hello.py
-│   │   ├── web/                 # 前端扩展（可选）
-│   │   │   └── index.js
-│   │   └── README.md
-│   └── another_plugin/
-│       └── ...
+├── nodes/                       # 社区节点包目录
+│   └── community/               # Git/本地安装的节点包
+│       └── my_nodes/
+│           ├── vf-node.yaml     # 节点包清单
+│           ├── nodes/
+│           │   └── hello.py
+│           └── web/             # 前端扩展（可选）
 ├── server/
 │   ├── nodes/
-│   │   ├── builtin/             # 内置节点（从原 nodes/ 迁移）
-│   │   │   ├── collect.py
-│   │   │   ├── download.py
+│   │   ├── builtin/             # 内置节点
+│   │   │   ├── cron_trigger.py
+│   │   │   ├── wechat_channel.py
+│   │   │   ├── feishu_channel.py
+│   │   │   ├── dingtalk_channel.py
 │   │   │   └── ...
 │   │   ├── base.py              # BaseNode + NodeInput + NodeOutput
 │   │   ├── registry.py          # @node 装饰器 + 自动发现
-│   │   ├── loader.py            # 插件加载器
-│   │   └── types.py             # 类型系统注册表
+│   │   ├── loader.py            # 节点包加载器
+│   │   └── pack_manager.py      # 版本管理 + 更新检测
 │   └── engine/
-│       └── executor.py          # 执行引擎（支持 edges + 并发）
+│       └── executor.py          # 执行引擎（edges + 并发 + 三种模式）
 └── ...
 ```
 
 ## 最佳实践
 
-### 1. 幂等性
-`execute` 应该是幂等的——相同输入产生相同输出，不依赖外部状态。
+### 1. 不要求幂等
+LLM 节点每次调用可能返回不同结果，默认 `cacheable = False`。需要缓存的节点显式声明并实现 `fingerprint()`。
 
 ### 2. 进度上报
 长任务必须调用 `on_progress(message, progress)` 上报进度，让前端能看到实时状态：

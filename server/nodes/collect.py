@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 
-from server.nodes.base import BaseNode
+from server.nodes.base import BaseNode, NodeInput, NodeOutput
 from server.nodes.registry import register
 from server.models import PipelineContext, CollectedData
 
@@ -19,9 +19,28 @@ class CollectNode(BaseNode):
     type = "collect"
     label = "数据采集"
     category = "数据采集"
+    description = "从微博/抖音/HuggingFace/GitHub 采集热点数据"
+    version = "1.0.0"
+    icon = "🕷️"
+    color = "#4CAF50"
+    author = "videofactory"
+
+    # 新方式：连线桩声明
+    inputs = []  # collect 是入口节点，无上游连线
+    outputs = [
+        NodeOutput(name="collected", type="CollectedData", label="采集数据",
+                   description="采集的原始数据（JSON 文件列表）"),
+    ]
+
+    # 向后兼容
     reads = []
     writes = ["collected"]
     output_dirs = ["collected"]
+
+    # 失败策略：采集失败可以跳过（用缓存数据）
+    on_failure = "skip"
+    max_retries = 2
+    retry_delay = 5.0
     config_schema = {
         "run_date": {
             "type": "str", "label": "运行日期",

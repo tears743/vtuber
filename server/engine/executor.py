@@ -544,7 +544,7 @@ class PipelineExecutor:
                 success = True
                 return
 
-            # execute
+            # execute（含 retry 逻辑）
             node_state.status = NodeStatus.RUNNING
             node_state.start_time = time.time()
             ctx.logger.info(f"[{node.id}] 开始执行 ({node.type})")
@@ -553,42 +553,69 @@ class PipelineExecutor:
             def on_progress(message: str, progress: float, _nid=node.id, _ns=node_state):
                 _ns.message = message
                 _ns.progress = progress
-                asyncio.get_event_loop().call_soon(
-                    self._progress_callback, _nid, progress, message
-                )
 
-            try:
-                outputs = await node.execute(ctx, on_progress)
+            max_attempts = 1 + (node.max_retries if node.on_failure == "retry" else 0)
 
-                # 写入产出到 ctx.data
-                if outputs and isinstance(outputs, dict):
-                    for output_name, value in outputs.items():
-                        ctx.write(node.id, output_name, value)
-
-                node_state.status = NodeStatus.COMPLETED
-                node_state.end_time = time.time()
-                node_state.duration_s = node_state.end_time - node_state.start_time
-                node_state.progress = 1.0
-                ctx.logger.info(f"[{node.id}] 完成 ({node_state.duration_s:.1f}s)")
-                await self._emit("node_complete", {
-                    "node_id": node.id,
-                    "duration_s": node_state.duration_s,
-                })
-                success = True
-
-            except Exception as e:
-                node_state.status = NodeStatus.FAILED
-                node_state.error = str(e)
-                node_state.end_time = time.time()
-                node_state.duration_s = node_state.end_time - node_state.start_time
-                ctx.logger.error(f"[{node.id}] 失败: {e}", exc_info=True)
-                await self._emit("node_error", {"node_id": node.id, "error": str(e)})
-
-                # on_error 钩子
+            for attempt in range(1, max_attempts + 1):
                 try:
-                    await node.on_error(ctx, e)
-                except Exception:
-                    pass
+                    outputs = await node.execute(ctx, on_progress)
+
+                    # 写入产出到 ctx.data
+                    if outputs and isinstance(outputs, dict):
+                        for output_name, value in outputs.items():
+                            ctx.write(node.id, output_name, value)
+
+                    node_state.status = NodeStatus.COMPLETED
+                    node_state.end_time = time.time()
+                    node_state.duration_s = node_state.end_time - node_state.start_time
+                    node_state.progress = 1.0
+                    ctx.logger.info(f"[{node.id}] 完成 ({node_state.duration_s:.1f}s)")
+                    await self._emit("node_complete", {
+                        "node_id": node.id,
+                        "duration_s": node_state.duration_s,
+                    })
+                    success = True
+                    break  # 成功，退出 retry 循环
+
+                except Exception as e:
+                    if attempt < max_attempts:
+                        ctx.logger.warning(
+                            f"[{node.id}] 第 {attempt}/{max_attempts} 次失败: {e}, "
+                            f"{node.retry_delay}s 后重试..."
+                        )
+                        await self._emit("node_progress", {
+                            "node_id": node.id,
+                            "progress": 0.0,
+                            "message": f"重试 {attempt}/{max_attempts}...",
+                        })
+                        await asyncio.sleep(node.retry_delay)
+                        # 重新 prepare
+                        try:
+                            await node.prepare(ctx)
+                        except Exception:
+                            pass
+                    else:
+                        # 最后一次尝试也失败
+                        node_state.status = NodeStatus.FAILED
+                        node_state.error = str(e)
+                        node_state.end_time = time.time()
+                        node_state.duration_s = node_state.end_time - node_state.start_time
+                        ctx.logger.error(f"[{node.id}] 失败（{max_attempts}次重试后）: {e}", exc_info=True)
+                        await self._emit("node_error", {"node_id": node.id, "error": str(e)})
+
+                        # on_error 钩子
+                        try:
+                            await node.on_error(ctx, e)
+                        except Exception:
+                            pass
+
+                        # on_failure=skip 时不中断管线
+                        if node.on_failure == "skip":
+                            ctx.logger.info(f"[{node.id}] on_failure=skip, 继续执行后续节点")
+                            success = False
+                        # on_failure=abort 时抛出（由 _execute_layer 处理）
+                        elif node.on_failure == "abort":
+                            raise
 
         finally:
             # finalize（无论成功失败都调用）

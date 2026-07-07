@@ -1,0 +1,8 @@
+feat: 节点体系重构阶段三 — 节点生态（加载器/版本管理/API）
+
+新增：
+- NodePackLoader: 支持 builtin/community/pip 三种来源自动加载
+- NodePackManager: 版本检测(git ls-remote) + 更新(git pull/pip upgrade) + semver 比较
+- node_packs API: install/update/enable/disable/remove 全套 CRUD
+- nodes API 增强: 返回 global_config.models 供前端 model 下拉框
+- run_server.py: 自动发现 + 旧节点兼容 + node_packs 路由注册

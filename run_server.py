@@ -45,8 +45,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── 注册所有节点（触发 @register 装饰器）──
-# 导入所有节点模块来触发注册
+# ── 注册所有节点（自动发现 + 社区节点包）──
+from server.nodes.loader import pack_loader
+
+# 1. 加载内置节点（server/nodes/builtin/ 下的 .py 文件）
+# 2. 加载社区节点包（nodes/community/ 下的 vf-node.yaml）
+# 3. 加载 pip 安装的节点包（entry_points）
+# 同时兼容旧的硬编码 import（旧节点仍从 server/nodes/ 直接导入）
+# 旧节点文件不在 builtin/ 目录下，需要显式 import
 import server.nodes.collect  # noqa: F401
 import server.nodes.download  # noqa: F401
 import server.nodes.recognize  # noqa: F401
@@ -59,6 +65,9 @@ import server.nodes.visual  # noqa: F401
 import server.nodes.live2d  # noqa: F401
 import server.nodes.compose  # noqa: F401
 
+# 加载 builtin + community + pip 节点
+pack_loader.load_all()
+
 from server.nodes.registry import list_types
 logger.info(f"已注册 {len(list_types())} 个节点类型: {list_types()}")
 
@@ -68,12 +77,14 @@ from server.api.nodes import router as nodes_router
 from server.api.settings import router as settings_router
 from server.api.runs import router as runs_router
 from server.api.scripts import router as scripts_router
+from server.api.node_packs import router as node_packs_router
 
 app.include_router(workflows_router)
 app.include_router(nodes_router)
 app.include_router(settings_router)
 app.include_router(runs_router)
 app.include_router(scripts_router)
+app.include_router(node_packs_router)
 
 
 # ── 健康检查 ──

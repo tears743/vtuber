@@ -95,6 +95,8 @@ async def health():
 
 # ── 前端静态文件 (production build) ──
 FRONTEND_DIR = PROJECT_ROOT / "web" / "dist"
+if not FRONTEND_DIR.exists():
+    FRONTEND_DIR = Path(r"d:\workspace\videoFactory\web\dist")
 if FRONTEND_DIR.exists():
     from fastapi.responses import FileResponse
 
@@ -177,11 +179,34 @@ async def startup():
     logger.info("VideoFactory Workflow Server 启动完成")
 
 
+def _find_available_port(start: int = 8100, max_attempts: int = 10) -> int:
+    """检测端口是否被占用，被占用则自动递增找可用端口"""
+    import socket
+
+    for offset in range(max_attempts):
+        port = start + offset
+        # 检测端口是否有人在监听
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            result = s.connect_ex(("127.0.0.1", port))
+        if result != 0:
+            # 连接失败 = 端口空闲
+            if offset > 0:
+                logger.info(f"端口 {start} 被占用，使用端口 {port}")
+            return port
+        else:
+            logger.warning(f"端口 {port} 被占用，尝试下一个...")
+
+    logger.error(f"端口 {start}~{start + max_attempts - 1} 全部被占用，使用默认端口 {start}")
+    return start
+
+
 if __name__ == "__main__":
+    port = _find_available_port(8100)
     uvicorn.run(
         "run_server:app",
         host="0.0.0.0",
-        port=8100,
+        port=port,
         reload=True,
         reload_dirs=[str(PROJECT_ROOT / "server")],
     )

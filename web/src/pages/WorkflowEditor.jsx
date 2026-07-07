@@ -12,6 +12,7 @@ import {
   useNodesState,
   useEdgesState,
   addEdge,
+  useReactFlow,
   BackgroundVariant,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -25,6 +26,7 @@ import { TimelinePanel } from '../components/TimelinePanel'
 
 export function WorkflowEditor() {
   const { id } = useParams()
+  const { screenToFlowPosition } = useReactFlow()
   const [workflow, setWorkflow] = useState(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
@@ -45,7 +47,9 @@ export function WorkflowEditor() {
       api.getWorkflow(id),
       api.listNodes(),
       api.listNodeCategories(),
-    ]).then(([wf, defs, cats]) => {
+    ]).then(([wf, nodesResp, cats]) => {
+      // listNodes() 返回 {nodes: [...], node_packs: [...], global_config: {...}}
+      const defs = nodesResp.nodes || nodesResp || []
       setWorkflow(wf)
       setNodeDefinitions(defs)
       setNodeCategories(cats)
@@ -198,11 +202,8 @@ export function WorkflowEditor() {
     const def = nodeDefinitions.find(d => d.type === type)
     if (!def) return
 
-    const reactFlowBounds = e.currentTarget.getBoundingClientRect()
-    const position = {
-      x: e.clientX - reactFlowBounds.left,
-      y: e.clientY - reactFlowBounds.top,
-    }
+    // 用 React Flow 的 screenToFlowPosition 将屏幕坐标转为画布坐标
+    const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
 
     const newId = `${type}_${Date.now().toString(36)}`
     const newNode = {
@@ -219,7 +220,7 @@ export function WorkflowEditor() {
       },
     }
     setNodes(nds => [...nds, newNode])
-  }, [nodeDefinitions, setNodes])
+  }, [nodeDefinitions, setNodes, screenToFlowPosition])
 
   const minimapNodeColor = (node) => {
     const cat = node.data?.category

@@ -212,7 +212,26 @@ class PipelineExecutor:
             await self._event_callback(event_type, data)
 
     def stop(self):
+        """请求停止执行 — 设置标志位 + 终止子进程"""
         self._stop_requested = True
+        # 终止所有由节点启动的子进程（kukutool 下载等）
+        self._terminate_subprocesses()
+
+    def _terminate_subprocesses(self):
+        """终止所有正在运行的子进程"""
+        import subprocess
+        import psutil
+
+        try:
+            current_pid = __import__("os").getpid()
+            parent = psutil.Process(current_pid)
+            for child in parent.children(recursive=True):
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except Exception:
+            pass
 
     # ═══════════════════════════════════════════════════════
     # 主入口
@@ -280,8 +299,39 @@ class PipelineExecutor:
 
         await self._emit("run_start", {"run_id": run_id, "mode": mode})
 
-        # 设置日志
-        self._setup_logging(ctx, run_id, date, data_root)
+        # 设置日志（含 WebSocket 推送）
+        log_queue = asyncio.Queue()
+        self._setup_logging(ctx, run_id, date, data_root, log_queue)
+
+        # 后台 task：从 queue 取日志推送到前端
+        async def _drain_logs():
+            while True:
+                try:
+                    data = await asyncio.wait_for(log_queue.get(), timeout=0.5)
+                    if isinstance(data, dict) and data.get("type") == "node_progress":
+                        await self._emit("node_progress", {
+                            "node_id": data["node_id"],
+                            "progress": data["progress"],
+                            "message": data["message"],
+                        })
+                    else:
+                        await self._emit("log", data)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    while not log_queue.empty():
+                        data = log_queue.get_nowait()
+                        if isinstance(data, dict) and data.get("type") == "node_progress":
+                            await self._emit("node_progress", {
+                                "node_id": data["node_id"],
+                                "progress": data["progress"],
+                                "message": data["message"],
+                            })
+                        else:
+                            await self._emit("log", data)
+                    break
+
+        drain_task = asyncio.create_task(_drain_logs())
 
         try:
             if mode == "manual":
@@ -300,11 +350,24 @@ class PipelineExecutor:
             await self._emit("run_error", {"error": str(e)})
 
         finally:
+            # 停止 drain task 并清理
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+
             self._current_run.end_time = time.time()
             self._current_run.current_nodes = []
             total_time = self._current_run.end_time - self._current_run.start_time
             ctx.logger.info(f"工作流结束: {self._current_run.status} | 耗时: {total_time:.1f}s")
             await self._emit("run_end", self._current_run.to_dict())
+
+            # 清理 logger handlers
+            for h in list(ctx.logger.handlers):
+                ctx.logger.removeHandler(h)
+                if hasattr(h, 'close'):
+                    h.close()
 
         return self._current_run
 
@@ -669,22 +732,44 @@ class PipelineExecutor:
                 return layers[i:]
         return layers
 
-    def _setup_logging(self, ctx: PipelineContext, run_id: str, date: str, data_root: Path):
-        """设置日志（独立 logger，不污染 root）"""
+    def _setup_logging(self, ctx: PipelineContext, run_id: str, date: str, data_root: Path, log_queue: asyncio.Queue = None):
+        """设置日志（独立 logger + 文件 + WebSocket 推送）"""
         log_dir = data_root / date / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"run_{run_id}_{datetime.now().strftime('%H%M%S')}.log"
 
+        # 文件 handler
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%H:%M:%S",
         ))
-
         ctx.logger.addHandler(file_handler)
+
+        # WebSocket 推送 handler（通过 queue → drain task → _emit → 前端）
+        if log_queue:
+            ws_handler = WebSocketLogHandler(log_queue)
+            ws_handler.setLevel(logging.INFO)
+            ws_handler.setFormatter(logging.Formatter("%(message)s"))
+            ctx.logger.addHandler(ws_handler)
+
         ctx.logger.setLevel(logging.DEBUG)
         ctx.logger.info(f"日志文件: {log_file}")
+
+        # 同时把 agents 层的日志也路由到 ctx.logger
+        # agents.collector / agents.director / agents.renderer 的日志会通过 root logger 传播
+        # 需要额外挂到 agents logger 上
+        for agent_logger_name in ["agents", "agents.collector", "agents.director", "agents.renderer"]:
+            agent_logger = logging.getLogger(agent_logger_name)
+            if file_handler not in agent_logger.handlers:
+                agent_logger.addHandler(file_handler)
+            if log_queue:
+                ws_handler_agent = WebSocketLogHandler(log_queue)
+                ws_handler_agent.setLevel(logging.INFO)
+                ws_handler_agent.setFormatter(logging.Formatter("%(message)s"))
+                agent_logger.addHandler(ws_handler_agent)
+            agent_logger.setLevel(logging.DEBUG)
 
 
 # 全局执行器实例

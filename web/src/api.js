@@ -1,7 +1,8 @@
 /**
  * API 服务层 — 与后端通信
+ * 动态获取当前端口，不再硬编码 8100
  */
-const BASE_URL = 'http://localhost:8100'
+const BASE_URL = `${window.location.protocol}//${window.location.host}`
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -51,7 +52,7 @@ export const api = {
 
 // ── WebSocket ──
 export function createRunSocket(onMessage) {
-  const ws = new WebSocket(`ws://localhost:8100/ws/run`)
+  const ws = new WebSocket(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/run`)
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)

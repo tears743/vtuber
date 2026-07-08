@@ -199,6 +199,9 @@ class PipelineContext:
         # 缓存：旧属性的直接引用（向后兼容优化）
         self._legacy_fields: dict[str, Any] = {}
 
+        # edge 别名映射（旧节点兼容）：{target_handle: (source_node_id, source_output_name)}
+        self._edge_aliases: dict[str, tuple[str, str]] = {}
+
     # ── 数据读写 ──
 
     def write(self, node_id: str, output_name: str, value: Any) -> None:
@@ -255,6 +258,12 @@ class PipelineContext:
         # 优先从 _legacy_fields 取（旧节点直接赋值 ctx.collected = ...）
         if name in self._legacy_fields:
             return self._legacy_fields[name]
+        # 尝试通过 edge 别名从 data 仓库读取（新节点 → 旧节点兼容）
+        if name in self._edge_aliases:
+            src_id, src_output = self._edge_aliases[name]
+            val = self.read(src_id, src_output)
+            if val is not None:
+                return val
         # 尝试从 data 中按类型查找
         type_map = {
             "collected": "CollectedData",

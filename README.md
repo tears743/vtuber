@@ -24,6 +24,7 @@
 | Skill | 路径 | 说明 |
 |------|------|------|
 | Custom Node Author | `skills/custom-node-author/SKILL.md` | 用于手写自定义 VideoFactory node / node pack，适用于 Processor、Trigger、Listener 以及节点缓存、schema、运行时接入场景 |
+| Antigravity Bridge | `skills/antigravity-bridge/SKILL.md` | 通过 opencli 连接和操作 Antigravity IDE 聊天内容，读取/发送消息、提取代码，含 sandbox 限制排查指南 |
 
 ## 快速开始
 

@@ -107,15 +107,19 @@ class WebSocketLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
         try:
             msg = self.format(record)
-            for node_id in self._current_nodes:
-                data = {
-                    "node_id": node_id,
-                    "level": record.levelname,
-                    "message": msg,
-                    "logger": record.name,
-                    "timestamp": record.created,
-                }
-                self._queue.put_nowait(data)
+            # 优先用 record 自带的 node_id（通过 extra={"node_id": ...} 传入）
+            node_id = getattr(record, "node_id", None)
+            if not node_id:
+                # 没有显式 node_id 时，用 current_nodes 的第一个（不广播）
+                node_id = self._current_nodes[0] if self._current_nodes else None
+            data = {
+                "node_id": node_id,
+                "level": record.levelname,
+                "message": msg,
+                "logger": record.name,
+                "timestamp": record.created,
+            }
+            self._queue.put_nowait(data)
         except Exception:
             pass
 
@@ -262,6 +266,12 @@ class PipelineExecutor:
         self._stop_requested = False
         self._force_no_cache = force_no_cache
 
+        # 确保项目根目录在 sys.path 中（uvicorn reload 子进程兼容）
+        import sys as _sys
+        _project_root = str(Path(__file__).parent.parent.parent)
+        if _project_root not in _sys.path:
+            _sys.path.insert(0, _project_root)
+
         mode = workflow.get("mode", "manual")
 
         # 构建 Context
@@ -283,7 +293,7 @@ class PipelineExecutor:
             nodes.append(node)
 
         # 注入 edge 映射到节点的 connected inputs
-        self._inject_edge_bindings(nodes, workflow.get("edges", []))
+        self._inject_edge_bindings(nodes, workflow.get("edges", []), ctx)
 
         # 初始化运行状态
         self._current_run = RunState(
@@ -300,7 +310,8 @@ class PipelineExecutor:
         await self._emit("run_start", {"run_id": run_id, "mode": mode})
 
         # 设置日志（含 WebSocket 推送）
-        log_queue = asyncio.Queue()
+        self._log_queue = asyncio.Queue()
+        log_queue = self._log_queue
         self._setup_logging(ctx, run_id, date, data_root, log_queue)
 
         # 后台 task：从 queue 取日志推送到前端
@@ -512,7 +523,21 @@ class PipelineExecutor:
 
             # 4. 双向通道：取下游 reply 产出，发送回复
             if getattr(trigger, "bidirectional", False):
-                reply = ctx.read(trigger.id, "reply")
+                # 扫描下游节点的 outputs 中类型为 Reply 的产出
+                reply = None
+                downstream_ids = set()
+                queue_ids = [trigger.id]
+                while queue_ids:
+                    current = queue_ids.pop(0)
+                    for edge in edges:
+                        if edge.get("source") == current and edge.get("target") not in downstream_ids:
+                            downstream_ids.add(edge["target"])
+                            queue_ids.append(edge["target"])
+                for did in downstream_ids:
+                    val = ctx.read(did, "reply")
+                    if val is not None:
+                        reply = val
+                        break
                 if reply is None:
                     reply = ctx.find_latest_by_type("Reply")
                 if reply and hasattr(trigger, "send_reply"):
@@ -616,6 +641,16 @@ class PipelineExecutor:
             def on_progress(message: str, progress: float, _nid=node.id, _ns=node_state):
                 _ns.message = message
                 _ns.progress = progress
+                # 推送到前端 WebSocket
+                try:
+                    self._log_queue.put_nowait({
+                        "type": "node_progress",
+                        "node_id": _nid,
+                        "progress": progress,
+                        "message": message,
+                    })
+                except Exception:
+                    pass
 
             max_attempts = 1 + (node.max_retries if node.on_failure == "retry" else 0)
 
@@ -697,11 +732,12 @@ class PipelineExecutor:
     # 辅助方法
     # ═══════════════════════════════════════════════════════
 
-    def _inject_edge_bindings(self, nodes: list[BaseNode], edges: list[dict]):
+    def _inject_edge_bindings(self, nodes: list[BaseNode], edges: list[dict], ctx: PipelineContext = None):
         """将 edge 映射注入到节点的 connected inputs
 
-        edge 格式: {"source": "a", "target": "b", "source_handle": "collected", "target_handle": "collected"}
-        → 找到 target 节点中 name == target_handle 的 input，设置 connected_from = "a:collected"
+        新节点：通过 inputs/connected_from 走 ctx.read(node_id, output_name)
+        旧节点：没有 inputs 声明，通过 reads/writes + ctx._get_legacy 走 find_by_type
+        对旧节点，记录 edge 别名到 ctx._edge_aliases，让 _get_legacy 能通过 edge 关系找到新节点产出
         """
         node_map = {n.id: n for n in nodes}
 
@@ -716,14 +752,18 @@ class PipelineExecutor:
 
             target_node = node_map[tgt]
 
-            # 在 target 节点的 inputs 中找匹配的 connected input
+            # 新节点：在 inputs 中找匹配的 connected input
+            matched = False
             for inp in target_node.inputs:
                 if inp.connected and (inp.name == tgt_handle or not tgt_handle):
                     inp.connected_from = f"{src}:{src_handle}" if src_handle else f"{src}:output"
+                    matched = True
                     break
 
-            # 旧方式：reads 兼容（直接设置 ctx 属性名映射）
-            # 如果节点没有 inputs 声明但用 reads，靠 edges 里的 source_handle 对齐
+            # 旧节点：没有 inputs 声明，记录 edge 别名到 ctx
+            if not matched and not target_node.inputs and tgt_handle and ctx:
+                # tgt_handle 通常对应 reads 里的类型名（如 "collected", "media"）
+                ctx._edge_aliases[tgt_handle] = (src, src_handle or "output")
 
     def _skip_layers_before(self, layers: list[list[BaseNode]], resume_node_id: str) -> list[list[BaseNode]]:
         """跳过指定节点之前的层"""

@@ -194,10 +194,28 @@
 
 ### 基础规则
 
-- 默认节点不缓存：`cacheable = False`
+- 默认节点不缓存：`cacheable = False`（LLM 节点不幂等，默认不缓存是安全的）
 - 开启缓存的节点需要明确自己的命中语义
 - 对于简单节点，可以依赖基类的 `output_dirs` 或 `fingerprint()`
 - 对于复杂节点，允许覆写 `check_cache()`
+
+### 内置节点缓存清单
+
+| 节点 | `cacheable` | 命中方式 | 说明 |
+|------|-------------|----------|------|
+| `collect` | `True` | 覆写 `check_cache()` | 按"日期 + 已选站点"命中 |
+| `download` | `False` | — | 依赖内部"文件已存在则跳过"逻辑 |
+| `recognize` | `False` | — | LLM 理解结果不幂等 |
+| `transcribe` | `False` | — | Whisper 转录结果不幂等 |
+| `director` | `False` | — | LLM 选题不幂等 |
+| `tts` | `False` | — | 依赖内部"文件已存在则跳过"逻辑 |
+| `align` | `False` | — | LLM 对齐不幂等 |
+| `overlay` | `False` | — | Remotion 渲染 |
+| `visual` | `False` | — | Remotion 渲染 |
+| `live2d` | `False` | — | Remotion 渲染 |
+| `compose` | `False` | — | 依赖内部"MP4 已存在则跳过"逻辑 |
+
+注意：`download`、`tts`、`compose` 虽然没有开 `cacheable`，但它们内部有"输出文件已存在则跳过"的逻辑，这是另一种粒度的复用。
 
 ### `collect` 节点的当前语义
 

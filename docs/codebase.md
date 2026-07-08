@@ -4,6 +4,14 @@
 
 VideoFactory 是一个全自动 AI 短视频生产管线，每天从多个平台采集热点新闻，通过 LLM 编排脚本，最终合成带 Live2D 虚拟角色口播的竖屏短视频。
 
+除了传统 `scripts/run_pipeline.ps1` 主链路，当前分支还新增了一套可视化 node workflow 系统：
+
+- `server/`：FastAPI 工作流后端
+- `web/`：React Flow 前端画布
+- `workflows/`：工作流 JSON 存储
+- `docs/NODE_SYSTEM_RUNTIME.md`：当前分支 node runtime 实现说明
+- `docs/CUSTOM_NODES.md`：自定义节点开发规范
+
 **输出产物：**
 - `hot_daily.mp4` — 热搜集锦（微博 + 抖音），7-8 分钟
 - `ai_daily.mp4` — AI 日报（HuggingFace + GitHub），4-5 分钟
@@ -46,6 +54,17 @@ videoFactory/
 ├── config.yaml              # 全局配置（模型、路径、参数）
 ├── config_loader.py         # 配置加载工具
 ├── requirements.txt         # Python 依赖
+│
+├── server/                  # 可视化工作流后端
+│   ├── api/                 # 节点/工作流/运行/节点包 API
+│   ├── engine/              # 执行引擎（拓扑排序、并发、日志、停止）
+│   ├── nodes/               # 节点基类、注册、加载、内置节点
+│   └── models.py            # PipelineContext 与阶段产出数据结构
+│
+├── web/                     # 可视化工作流前端
+│   └── src/
+│
+├── workflows/               # 工作流 JSON
 │
 ├── agents/                  # 核心 Agent 模块
 │   ├── collector/           # Layer 1: 数据采集
@@ -122,7 +141,9 @@ videoFactory/
 │       └── final/           # 最终成片 (MP4)
 │
 └── docs/
-    └── pipeline.md          # 管线使用文档
+    ├── pipeline.md          # 传统脚本管线使用文档
+    ├── CUSTOM_NODES.md      # 自定义节点开发规范
+    └── NODE_SYSTEM_RUNTIME.md # 当前分支 node runtime 实现说明
 ```
 
 ---

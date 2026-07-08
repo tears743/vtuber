@@ -42,6 +42,7 @@ class CollectorOrchestrator:
         opencli_binary: str,
         data_dir: Path,
         max_workers: int = 4,
+        enabled_platforms: list[str] | None = None,
     ):
         self.client = OpenAI(base_url=orchestrator_base_url, api_key=orchestrator_api_key)
         self.model = orchestrator_model
@@ -53,9 +54,20 @@ class CollectorOrchestrator:
         self.opencli_binary = opencli_binary
         self.data_dir = data_dir
         self.max_workers = max_workers
+        self.enabled_platforms = tuple(enabled_platforms or ["weibo", "douyin", "github", "huggingface"])
         
         # Ensure output dir exists
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _empty_plan(self) -> dict:
+        return {platform: [] for platform in self.enabled_platforms}
+
+    def _filter_plan(self, plan: dict) -> dict:
+        filtered = self._empty_plan()
+        for platform in self.enabled_platforms:
+            topics = plan.get(platform, [])
+            filtered[platform] = topics if isinstance(topics, list) else []
+        return filtered
     
     def run(self) -> dict:
         """
@@ -118,8 +130,18 @@ class CollectorOrchestrator:
             "hf_papers": "hf top -f json --limit 20",
             "hf_spaces": "hf spaces -f json --limit 10",
         }
+
+        enabled_sources = set()
+        if "weibo" in self.enabled_platforms:
+            enabled_sources.add("weibo")
+        if "douyin" in self.enabled_platforms:
+            enabled_sources.add("douyin")
+        if "huggingface" in self.enabled_platforms:
+            enabled_sources.update({"hf_papers", "hf_spaces"})
         
         for name, cmd in commands.items():
+            if name not in enabled_sources:
+                continue
             full_cmd = f"{self.opencli_binary} {cmd}"
             try:
                 proc = subprocess.run(
@@ -147,26 +169,27 @@ class CollectorOrchestrator:
                 logger.error(f"[orchestrator] {name}: {e}")
         
         # GitHub Trending via browser (全量)
-        try:
-            full_cmd = f"{self.opencli_binary} browser gh_orch open https://github.com/trending"
-            subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
-                          encoding="utf-8", errors="replace")
-            
-            full_cmd = f'{self.opencli_binary} browser gh_orch eval "Array.from(document.querySelectorAll(\'article h2 a\')).map(a => ({{title: a.textContent.trim(), url: \'https://github.com\' + a.getAttribute(\'href\')}}))"'
-            proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
-                                 encoding="utf-8", errors="replace")
-            if proc.returncode == 0:
-                try:
-                    data = json.loads(proc.stdout.strip())
-                    results["github"] = data if isinstance(data, list) else []
-                    logger.info(f"[orchestrator] github: {len(results.get('github', []))} repos")
-                except json.JSONDecodeError:
+        if "github" in self.enabled_platforms:
+            try:
+                full_cmd = f"{self.opencli_binary} browser gh_orch open https://github.com/trending"
+                subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
+                              encoding="utf-8", errors="replace")
+
+                full_cmd = f'{self.opencli_binary} browser gh_orch eval "Array.from(document.querySelectorAll(\'article h2 a\')).map(a => ({{title: a.textContent.trim(), url: \'https://github.com\' + a.getAttribute(\'href\')}}))"'
+                proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
+                                     encoding="utf-8", errors="replace")
+                if proc.returncode == 0:
+                    try:
+                        data = json.loads(proc.stdout.strip())
+                        results["github"] = data if isinstance(data, list) else []
+                        logger.info(f"[orchestrator] github: {len(results.get('github', []))} repos")
+                    except json.JSONDecodeError:
+                        results["github"] = []
+                else:
                     results["github"] = []
-            else:
+            except Exception as e:
                 results["github"] = []
-        except Exception as e:
-            results["github"] = []
-            logger.error(f"[orchestrator] github: {e}")
+                logger.error(f"[orchestrator] github: {e}")
         
         # LMSYS Chatbot Arena 排名（只拉排名，不深挖）
         try:
@@ -305,7 +328,7 @@ Rules:
                 response_format={"type": "json_object"},
             )
             
-            plan = json.loads(response.choices[0].message.content)
+            plan = self._filter_plan(json.loads(response.choices[0].message.content))
             
             # Log plan
             for platform, topics in plan.items():
@@ -321,31 +344,26 @@ Rules:
     
     def _fallback_plan(self, raw_data: dict) -> dict:
         """Simple fallback if LLM planning fails."""
-        plan = {
-            "weibo": [],
-            "douyin": [],
-            "huggingface": [],
-            "github": [],
-        }
+        plan = self._empty_plan()
         
         # Assign weibo hot to weibo worker
         for item in (raw_data.get("weibo") or [])[:8]:
-            if isinstance(item, dict):
+            if "weibo" in plan and isinstance(item, dict):
                 plan["weibo"].append(item)
         
         # Assign douyin to douyin worker
         for item in (raw_data.get("douyin") or [])[:5]:
-            if isinstance(item, dict):
+            if "douyin" in plan and isinstance(item, dict):
                 plan["douyin"].append(item)
         
         # HF papers
         for item in (raw_data.get("hf_papers") or [])[:6]:
-            if isinstance(item, dict):
+            if "huggingface" in plan and isinstance(item, dict):
                 plan["huggingface"].append(item)
         
         # GitHub
         for item in (raw_data.get("github") or [])[:5]:
-            if isinstance(item, dict):
+            if "github" in plan and isinstance(item, dict):
                 plan["github"].append(item)
         
         return plan

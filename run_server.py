@@ -45,8 +45,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── 注册所有节点（触发 @register 装饰器）──
-# 导入所有节点模块来触发注册
+# ── 注册所有节点（自动发现 + 社区节点包）──
+from server.nodes.loader import pack_loader
+
+# 1. 加载内置节点（server/nodes/builtin/ 下的 .py 文件）
+# 2. 加载社区节点包（nodes/community/ 下的 vf-node.yaml）
+# 3. 加载 pip 安装的节点包（entry_points）
+# 同时兼容旧的硬编码 import（旧节点仍从 server/nodes/ 直接导入）
+# 旧节点文件不在 builtin/ 目录下，需要显式 import
 import server.nodes.collect  # noqa: F401
 import server.nodes.download  # noqa: F401
 import server.nodes.recognize  # noqa: F401
@@ -59,6 +65,9 @@ import server.nodes.visual  # noqa: F401
 import server.nodes.live2d  # noqa: F401
 import server.nodes.compose  # noqa: F401
 
+# 加载 builtin + community + pip 节点
+pack_loader.load_all()
+
 from server.nodes.registry import list_types
 logger.info(f"已注册 {len(list_types())} 个节点类型: {list_types()}")
 
@@ -68,12 +77,14 @@ from server.api.nodes import router as nodes_router
 from server.api.settings import router as settings_router
 from server.api.runs import router as runs_router
 from server.api.scripts import router as scripts_router
+from server.api.node_packs import router as node_packs_router
 
 app.include_router(workflows_router)
 app.include_router(nodes_router)
 app.include_router(settings_router)
 app.include_router(runs_router)
 app.include_router(scripts_router)
+app.include_router(node_packs_router)
 
 
 # ── 健康检查 ──
@@ -84,6 +95,8 @@ async def health():
 
 # ── 前端静态文件 (production build) ──
 FRONTEND_DIR = PROJECT_ROOT / "web" / "dist"
+if not FRONTEND_DIR.exists():
+    FRONTEND_DIR = Path(r"d:\workspace\videoFactory\web\dist")
 if FRONTEND_DIR.exists():
     from fastapi.responses import FileResponse
 
@@ -166,11 +179,34 @@ async def startup():
     logger.info("VideoFactory Workflow Server 启动完成")
 
 
+def _find_available_port(start: int = 8100, max_attempts: int = 10) -> int:
+    """检测端口是否被占用，被占用则自动递增找可用端口"""
+    import socket
+
+    for offset in range(max_attempts):
+        port = start + offset
+        # 检测端口是否有人在监听
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            result = s.connect_ex(("127.0.0.1", port))
+        if result != 0:
+            # 连接失败 = 端口空闲
+            if offset > 0:
+                logger.info(f"端口 {start} 被占用，使用端口 {port}")
+            return port
+        else:
+            logger.warning(f"端口 {port} 被占用，尝试下一个...")
+
+    logger.error(f"端口 {start}~{start + max_attempts - 1} 全部被占用，使用默认端口 {start}")
+    return start
+
+
 if __name__ == "__main__":
+    port = _find_available_port(8100)
     uvicorn.run(
         "run_server:app",
         host="0.0.0.0",
-        port=8100,
+        port=port,
         reload=True,
         reload_dirs=[str(PROJECT_ROOT / "server")],
     )

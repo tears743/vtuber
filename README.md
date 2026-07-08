@@ -1,5 +1,31 @@
 # AI 自动化短视频生产管线
 
+## 文档索引
+
+当前仓库的正式文档集中在 `docs/` 目录，建议按下面顺序阅读：
+
+| 文档 | 路径 | 说明 |
+|------|------|------|
+| 项目总览 | `docs/codebase.md` | 整体代码结构、核心模块、目录说明 |
+| 传统主管线 | `docs/pipeline.md` | `run_pipeline.ps1` 的使用方式、步骤说明与故障排查 |
+| 自定义节点开发 | `docs/CUSTOM_NODES.md` | 当前 node 体系的开发规范、生命周期、前后端协议、节点包结构 |
+| Node Runtime 现状 | `docs/NODE_SYSTEM_RUNTIME.md` | `feature/node-opt-v2` 分支已经落地的 node runtime、验证现状与已知限制 |
+
+如果你当前关注的是可视化工作流 / 节点体系，推荐阅读顺序：
+
+1. `docs/NODE_SYSTEM_RUNTIME.md`
+2. `docs/CUSTOM_NODES.md`
+3. `docs/codebase.md`
+
+## Skills 索引
+
+工程级 skill 放在根目录 `skills/` 下。
+
+| Skill | 路径 | 说明 |
+|------|------|------|
+| Custom Node Author | `skills/custom-node-author/SKILL.md` | 用于手写自定义 VideoFactory node / node pack，适用于 Processor、Trigger、Listener 以及节点缓存、schema、运行时接入场景 |
+| Antigravity Bridge | `skills/antigravity-bridge/SKILL.md` | 通过 opencli 连接和操作 Antigravity IDE 聊天内容，读取/发送消息、提取代码，含 sandbox 限制排查指南 |
+
 ## 快速开始
 
 ```powershell

@@ -13,9 +13,23 @@ def load_config(path: str = None) -> dict:
     """加载 config.yaml，支持环境变量覆盖"""
     if path is None:
         path = PROJECT_ROOT / "config.yaml"
-    
+        # worktree 中可能没有 config.yaml，fallback 到主仓库
+        if not Path(path).exists():
+            main_repo_config = Path(r"d:\workspace\videoFactory\config.yaml")
+            if main_repo_config.exists():
+                path = main_repo_config
+
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    # data_root 相对路径基于主仓库解析（worktree 中没有 data/ 目录）
+    paths = cfg.get("paths", {})
+    data_root = paths.get("data_root", "data")
+    if not Path(data_root).is_absolute():
+        main_data = Path(r"d:\workspace\videoFactory\data")
+        if main_data.exists():
+            paths["data_root"] = str(main_data)
+            cfg["paths"] = paths
     
     # 环境变量覆盖（向后兼容）
     if os.environ.get("DIRECTOR_API_KEY"):

@@ -3,8 +3,9 @@
  */
 import { useState } from 'react'
 import { PromptEditor } from './PromptEditor'
+import { CronEditor } from './CronEditor'
 
-export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange }) {
+export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange, onRunNode }) {
   const [editingPrompt, setEditingPrompt] = useState(null) // {key, field}
 
   if (!selectedNode) {
@@ -42,6 +43,16 @@ export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange 
           <label className="form-label">节点 ID</label>
           <input className="form-input" value={selectedNode.id} disabled />
         </div>
+
+        {/* 手动触发按钮 */}
+        <button
+          className="btn btn-primary"
+          style={{ width: '100%', marginBottom: 8, padding: '6px 12px', fontSize: 13 }}
+          onClick={() => onRunNode?.(selectedNode.id)}
+        >
+          ▶ 手动触发
+        </button>
+
         <div className="form-group">
           <label className="form-label">Reads</label>
           <input className="form-input" value={nodeDef?.reads?.join(', ') || '—'} disabled />
@@ -57,10 +68,12 @@ export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange 
           <div className="form-group" key={key}>
             <label className="form-label">
               {field.label || key}
-              {field.description && (
-                <span title={field.description} style={{ marginLeft: 4, cursor: 'help' }}>ℹ️</span>
-              )}
             </label>
+            {field.description && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, lineHeight: 1.4 }}>
+                {field.description}
+              </div>
+            )}
             {renderField(key, field, config[key], handleChange, setEditingPrompt)}
           </div>
         ))}
@@ -82,6 +95,26 @@ export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange 
 
 function renderField(key, field, value, onChange, setEditingPrompt) {
   const type = field.type
+
+  if (type === 'cron') {
+    return (
+      <CronEditor
+        value={value ?? field.default ?? '0 8 * * *'}
+        onChange={(val) => onChange(key, val)}
+      />
+    )
+  }
+
+  if (type === 'date') {
+    return (
+      <input
+        className="form-input"
+        type="date"
+        value={value ?? field.default ?? ''}
+        onChange={(e) => onChange(key, e.target.value)}
+      />
+    )
+  }
 
   if (type === 'text') {
     // 长文本指令 → 用触发按钮打开全屏编辑器

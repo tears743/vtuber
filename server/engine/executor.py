@@ -65,12 +65,14 @@ class RunState:
     start_time: float = 0.0
     end_time: float = 0.0
     current_nodes: list = field(default_factory=list)  # 当前执行的节点（并发时多个）
+    date: str = ""  # 运行日期
 
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
             "workflow_id": self.workflow_id,
             "status": self.status,
+            "date": self.date,
             "node_states": {
                 nid: {
                     "node_id": ns.node_id,
@@ -200,13 +202,29 @@ class PipelineExecutor:
 
     def __init__(self):
         self._current_run: Optional[RunState] = None
+        self._current_ctx: Optional[PipelineContext] = None
         self._stop_requested: bool = False
         self._event_callback: Optional[Callable] = None
         self._force_no_cache: bool = False
+        # 日志序号（每条运行独立计数）
+        self._log_seq: int = 0
+        # 初始化 SQLite 存储
+        from server.engine.run_store import init_db
+        init_db()
 
     @property
     def current_run(self) -> Optional[RunState]:
         return self._current_run
+
+    def get_run_history(self, workflow_id: str) -> list[dict]:
+        """获取某个工作流的运行历史（从 SQLite 查）"""
+        from server.engine.run_store import get_run_history
+        return get_run_history(workflow_id)
+
+    def get_run(self, run_id: str) -> Optional[dict]:
+        """获取某次运行的详细状态 + 日志（从 SQLite 查）"""
+        from server.engine.run_store import get_run_detail
+        return get_run_detail(run_id)
 
     def set_event_callback(self, callback: Callable):
         self._event_callback = callback
@@ -218,6 +236,9 @@ class PipelineExecutor:
     def stop(self):
         """请求停止执行 — 设置标志位 + 终止子进程"""
         self._stop_requested = True
+        # 同步到 ctx，让长驻节点（如 cron_trigger）能检测到
+        if self._current_ctx:
+            self._current_ctx._stop_requested = True
         # 终止所有由节点启动的子进程（kukutool 下载等）
         self._terminate_subprocesses()
 
@@ -281,6 +302,7 @@ class PipelineExecutor:
             config=config,
             run_id=run_id,
         )
+        self._current_ctx = ctx
 
         # 创建节点实例
         nodes = []
@@ -301,10 +323,27 @@ class PipelineExecutor:
             workflow_id=workflow.get("id", "unknown"),
             status="running",
             start_time=time.time(),
+            date=date,
             node_states={
                 n.id: NodeState(node_id=n.id, node_type=n.type)
                 for n in nodes
             },
+        )
+
+        # 初始化日志缓存
+        self._log_seq = 0
+
+        # 保存运行到 SQLite
+        from server.engine.run_store import save_run as _save_run
+        _save_run(
+            run_id=run_id,
+            workflow_id=workflow.get("id", "unknown"),
+            status="running",
+            date=date,
+            start_time=self._current_run.start_time,
+            end_time=0,
+            current_nodes=[],
+            node_states={},
         )
 
         await self._emit("run_start", {"run_id": run_id, "mode": mode})
@@ -314,11 +353,15 @@ class PipelineExecutor:
         log_queue = self._log_queue
         self._setup_logging(ctx, run_id, date, data_root, log_queue)
 
-        # 后台 task：从 queue 取日志推送到前端
+        # 后台 task：从 queue 取日志推送到前端 + 写入 SQLite
+        from server.engine.run_store import append_log as _append_log
+
         async def _drain_logs():
             while True:
                 try:
                     data = await asyncio.wait_for(log_queue.get(), timeout=0.5)
+                    self._log_seq += 1
+                    _append_log(run_id, self._log_seq, data)
                     if isinstance(data, dict) and data.get("type") == "node_progress":
                         await self._emit("node_progress", {
                             "node_id": data["node_id"],
@@ -332,6 +375,8 @@ class PipelineExecutor:
                 except asyncio.CancelledError:
                     while not log_queue.empty():
                         data = log_queue.get_nowait()
+                        self._log_seq += 1
+                        _append_log(run_id, self._log_seq, data)
                         if isinstance(data, dict) and data.get("type") == "node_progress":
                             await self._emit("node_progress", {
                                 "node_id": data["node_id"],
@@ -354,6 +399,10 @@ class PipelineExecutor:
 
             if not self._stop_requested:
                 self._current_run.status = "completed"
+            else:
+                self._current_run.status = "stopped"
+                ctx.logger.info("执行被用户停止")
+                await self._emit("run_stopped", {"run_id": run_id})
 
         except Exception as e:
             self._current_run.status = "failed"
@@ -373,6 +422,30 @@ class PipelineExecutor:
             total_time = self._current_run.end_time - self._current_run.start_time
             ctx.logger.info(f"工作流结束: {self._current_run.status} | 耗时: {total_time:.1f}s")
             await self._emit("run_end", self._current_run.to_dict())
+
+            # 保存最终状态到 SQLite
+            from server.engine.run_store import save_run as _save_run
+            _save_run(
+                run_id=run_id,
+                workflow_id=self._current_run.workflow_id,
+                status=self._current_run.status,
+                date=self._current_run.date,
+                start_time=self._current_run.start_time,
+                end_time=self._current_run.end_time,
+                current_nodes=self._current_run.current_nodes,
+                node_states={
+                    nid: {
+                        "node_id": ns.node_id,
+                        "node_type": ns.node_type,
+                        "status": ns.status.value,
+                        "progress": ns.progress,
+                        "message": ns.message,
+                        "duration_s": ns.duration_s,
+                        "error": ns.error,
+                    }
+                    for nid, ns in self._current_run.node_states.items()
+                },
+            )
 
             # 清理 logger handlers
             for h in list(ctx.logger.handlers):
@@ -510,16 +583,21 @@ class PipelineExecutor:
             # 1. 写入触发器产出
             output_name = trigger.outputs[0].name if trigger.outputs else "trigger"
             ctx.write(trigger.id, output_name, event_data)
+            ctx.logger.info(f"emit 触发: {trigger.id} → {output_name}")
 
             # 2. 获取下游子图
             downstream_layers = self._get_downstream_subgraph(trigger.id, all_nodes, edges)
+            ctx.logger.info(f"下游子图: {len(downstream_layers)} 层, edges={len(edges)}")
 
             # 3. 执行下游子图
-            for layer in downstream_layers:
+            for i, layer in enumerate(downstream_layers):
                 if self._stop_requested:
+                    ctx.logger.info(f"emit: stop_requested=True, 跳过层 {i}")
                     break
+                ctx.logger.info(f"执行下游层 {i}: {[n.id for n in layer]}")
                 await self._execute_layer(layer, ctx)
                 await ctx.drain_messages()
+            ctx.logger.info(f"emit: 下游执行完毕, stop_requested={self._stop_requested}")
 
             # 4. 双向通道：取下游 reply 产出，发送回复
             if getattr(trigger, "bidirectional", False):
@@ -547,15 +625,25 @@ class PipelineExecutor:
         try:
             ctx.logger.info(f"启动监听器: {trigger.id} ({trigger.type})")
             await trigger.prepare(ctx)
+            ctx.logger.info(f"监听器 {trigger.id} prepare 完成，开始 listen()")
             await trigger.listen(ctx, emit)
+            ctx.logger.info(f"监听器 {trigger.id} listen() 正常返回, stop_requested={self._stop_requested}, ctx_stop={getattr(ctx, '_stop_requested', 'N/A')}")
         except asyncio.CancelledError:
             ctx.logger.info(f"监听器 {trigger.id} 被取消")
         except Exception as e:
             ctx.logger.error(f"监听器 {trigger.id} 异常: {e}", exc_info=True)
             await self._emit("node_error", {"node_id": trigger.id, "error": str(e)})
+            await self._emit("log", {
+                "node_id": trigger.id,
+                "level": "ERROR",
+                "message": f"监听器 {trigger.id} 异常: {e}",
+                "logger": "workflow",
+                "timestamp": time.time(),
+            })
+            await self._emit("run_error", {"error": str(e)})
         finally:
             await trigger.finalize(ctx, success=False)
-            ctx.logger.info(f"监听器 {trigger.id} 已停止")
+            ctx.logger.info(f"监听器 {trigger.id} 已停止, 进入 finally")
 
     def _get_downstream_subgraph(
         self,
@@ -589,6 +677,181 @@ class PipelineExecutor:
             if e.get("source") in downstream_ids and e.get("target") in downstream_ids
         ]
         return topological_sort(downstream_nodes, downstream_edges)
+
+    # ═══════════════════════════════════════════════════════
+    # 单节点手动触发
+    # ═══════════════════════════════════════════════════════
+
+    async def run_single_node(
+        self,
+        workflow: dict,
+        config: dict,
+        node_id: str,
+        date: str,
+        data_root: Path,
+    ) -> RunState:
+        """手动触发单个节点 + 其下游子图"""
+        import sys as _sys
+        _project_root = str(Path(__file__).parent.parent.parent)
+        if _project_root not in _sys.path:
+            _sys.path.insert(0, _project_root)
+
+        run_id = str(uuid.uuid4())[:8]
+        self._stop_requested = False
+        self._log_seq = 0
+
+        # 构建节点实例
+        from server.nodes.registry import _registry
+        wf_nodes_raw = workflow.get("nodes", [])
+        edges = workflow.get("edges", [])
+        nodes = []
+        for n in wf_nodes_raw:
+            cls = _registry.get(n["type"])
+            if not cls:
+                continue
+            node = cls(node_id=n["id"], config=n.get("config", {}))
+            nodes.append(node)
+
+        # 构建 Context
+        ctx = PipelineContext(
+            date=date,
+            data_root=data_root,
+            config=config,
+            run_id=run_id,
+        )
+        self._current_ctx = ctx
+
+        # 注入 edge bindings
+        self._inject_edge_bindings(nodes, edges, ctx)
+
+        # 找到目标节点
+        node_map = {n.id: n for n in nodes}
+        target_node = node_map.get(node_id)
+        if not target_node:
+            raise ValueError(f"节点 {node_id} 未找到")
+
+        # 初始化 RunState
+        self._current_run = RunState(
+            run_id=run_id,
+            workflow_id=workflow.get("id", "unknown"),
+            status="running",
+            start_time=time.time(),
+            date=date,
+            node_states={
+                n.id: NodeState(node_id=n.id, node_type=n.type)
+                for n in nodes
+            },
+        )
+
+        # 保存到 SQLite
+        from server.engine.run_store import save_run as _save_run, append_log as _append_log
+        _save_run(
+            run_id=run_id,
+            workflow_id=workflow.get("id", "unknown"),
+            status="running",
+            date=date,
+            start_time=self._current_run.start_time,
+            end_time=0,
+            current_nodes=[],
+            node_states={},
+        )
+
+        # 设置日志
+        self._log_queue = asyncio.Queue()
+        log_queue = self._log_queue
+        self._setup_logging(ctx, run_id, date, data_root, log_queue)
+
+        await self._emit("run_start", {"run_id": run_id, "mode": "manual_node"})
+
+        # drain task
+        async def _drain_logs():
+            while True:
+                try:
+                    data = await asyncio.wait_for(log_queue.get(), timeout=0.5)
+                    self._log_seq += 1
+                    _append_log(run_id, self._log_seq, data)
+                    if isinstance(data, dict) and data.get("type") == "node_progress":
+                        await self._emit("node_progress", {
+                            "node_id": data["node_id"],
+                            "progress": data["progress"],
+                            "message": data["message"],
+                        })
+                    else:
+                        await self._emit("log", data)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
+
+        drain_task = asyncio.create_task(_drain_logs())
+
+        try:
+            if isinstance(target_node, TriggerNode):
+                # Trigger 节点：启动 listen() 定时循环，到期后自动触发下游
+                ctx.logger.info(f"启动 Trigger 节点定时循环: {target_node.id}")
+                await self._run_listener(target_node, nodes, edges, ctx)
+            else:
+                # 普通节点：直接执行
+                ctx.logger.info(f"手动执行节点: {target_node.id}")
+                await self._execute_layer([target_node], ctx)
+
+            if not self._stop_requested:
+                self._current_run.status = "completed"
+            else:
+                self._current_run.status = "stopped"
+                ctx.logger.info("执行被用户停止, 设置 status=stopped")
+                await self._emit("run_stopped", {"run_id": run_id})
+
+        except Exception as e:
+            self._current_run.status = "failed"
+            ctx.logger.error(f"手动触发失败: {e}", exc_info=True)
+            await self._emit("run_error", {"error": str(e)})
+
+        finally:
+            ctx.logger.info(f"run_single_node 进入 finally, status={self._current_run.status}")
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+
+            self._current_run.end_time = time.time()
+            self._current_run.current_nodes = []
+            total_time = self._current_run.end_time - self._current_run.start_time
+            ctx.logger.info(f"手动触发结束: {self._current_run.status} | 耗时: {total_time:.1f}s")
+            await self._emit("run_end", self._current_run.to_dict())
+
+            # 保存最终状态到 SQLite
+            ctx.logger.info(f"SQLite 保存: run_id={run_id}, status={self._current_run.status}")
+            _save_run(
+                run_id=run_id,
+                workflow_id=self._current_run.workflow_id,
+                status=self._current_run.status,
+                date=self._current_run.date,
+                start_time=self._current_run.start_time,
+                end_time=self._current_run.end_time,
+                current_nodes=self._current_run.current_nodes,
+                node_states={
+                    nid: {
+                        "node_id": ns.node_id,
+                        "node_type": ns.node_type,
+                        "status": ns.status.value,
+                        "progress": ns.progress,
+                        "message": ns.message,
+                        "duration_s": ns.duration_s,
+                        "error": ns.error,
+                    }
+                    for nid, ns in self._current_run.node_states.items()
+                },
+            )
+            ctx.logger.info("SQLite 保存完成")
+
+            for h in list(ctx.logger.handlers):
+                ctx.logger.removeHandler(h)
+                if hasattr(h, 'close'):
+                    h.close()
+
+        return self._current_run
 
     # ═══════════════════════════════════════════════════════
     # 单节点执行（完整生命周期）

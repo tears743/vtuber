@@ -38,10 +38,10 @@ class CronTriggerNode(TriggerNode):
 
     config_schema = {
         "cron_expr": {
-            "type": "string",
-            "label": "Cron 表达式",
+            "type": "cron",
+            "label": "定时计划",
             "default": "0 8 * * *",
-            "description": "标准5字段：分 时 日 月 周（如 '0 8 * * *' = 每天8点）",
+            "description": "标准5字段：分 时 日 月 周",
         },
         "timezone": {
             "type": "string",
@@ -72,6 +72,12 @@ class CronTriggerNode(TriggerNode):
         ctx.logger.info(f"CronTrigger 启动: '{cron_expr}' (时区: {tz_name})")
 
         while True:
+            # 检查 stop 标志（通过 ctx 传入）
+            _stop = getattr(ctx, '_stop_requested', False)
+            if _stop:
+                ctx.logger.info(f"CronTrigger 停止, ctx._stop_requested={_stop}")
+                break
+
             now = datetime.now(tz) if tz else datetime.now()
 
             try:
@@ -84,17 +90,25 @@ class CronTriggerNode(TriggerNode):
             wait_s = (next_run - now).total_seconds()
             ctx.logger.info(f"下次触发: {next_run}, 等待 {wait_s:.0f}s")
 
-            # 分段 sleep，以便能响应 stop 请求
+            # 分段 sleep，每 5s 检查 stop
             while wait_s > 0:
+                _stop = getattr(ctx, '_stop_requested', False)
+                if _stop:
+                    ctx.logger.info(f"CronTrigger 停止（等待中断）, ctx._stop_requested={_stop}")
+                    break
                 sleep_step = min(wait_s, 5.0)
                 await asyncio.sleep(sleep_step)
                 wait_s -= sleep_step
+            else:
+                # 正常到期触发
+                trigger_time = datetime.now(tz) if tz else datetime.now()
+                ctx.logger.info(f"触发! 时间: {trigger_time.isoformat()}")
 
-            trigger_time = datetime.now(tz) if tz else datetime.now()
-            ctx.logger.info(f"触发! 时间: {trigger_time.isoformat()}")
-
-            await emit({
-                "triggered_at": trigger_time.isoformat(),
-                "date": trigger_time.strftime("%Y-%m-%d"),
-                "cron_expr": cron_expr,
-            })
+                await emit({
+                    "triggered_at": trigger_time.isoformat(),
+                    "date": trigger_time.strftime("%Y-%m-%d"),
+                    "cron_expr": cron_expr,
+                })
+                continue
+            # 如果是 stop 中断的，跳出外层循环
+            break

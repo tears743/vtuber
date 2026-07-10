@@ -23,6 +23,7 @@ import { PropertiesPanel } from '../components/PropertiesPanel'
 import { RunDialog } from '../components/RunDialog'
 import { LogPanel } from '../components/LogPanel'
 import { TimelinePanel } from '../components/TimelinePanel'
+import { RunHistoryPanel } from '../components/RunHistoryPanel'
 
 export function WorkflowEditor() {
   const { id } = useParams()
@@ -39,6 +40,9 @@ export function WorkflowEditor() {
   const [logsExpanded, setLogsExpanded] = useState(false)
   const [timelineExpanded, setTimelineExpanded] = useState(false)
   const [runDate, setRunDate] = useState(null)
+  const [historyExpanded, setHistoryExpanded] = useState(false)
+  const [currentRunId, setCurrentRunId] = useState(null)
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
   const wsRef = useRef(null)
 
   // 加载工作流和节点定义
@@ -130,8 +134,13 @@ export function WorkflowEditor() {
         setLogs([])  // 新运行清空日志
         setLogsExpanded(true)
         setRunState({ status: 'running' })
+        if (msg.data.run_id) {
+          setCurrentRunId(msg.data.run_id)
+          setHistoryExpanded(true)
+        }
       } else if (msg.type === 'run_end' || msg.type === 'run_stopped') {
         setRunState({ status: 'idle' })
+        setHistoryRefreshKey(k => k + 1)
       }
     })
     return () => wsRef.current?.close()
@@ -156,6 +165,7 @@ export function WorkflowEditor() {
   }, [setNodes])
 
   // 保存
+  const [saveToast, setSaveToast] = useState(null)
   const handleSave = async () => {
     const wfNodes = nodes.map(n => ({
       id: n.id,
@@ -164,7 +174,13 @@ export function WorkflowEditor() {
       config: n.data.config || {},
     }))
     const wfEdges = edges.map(e => ({ source: e.source, target: e.target }))
-    await api.updateWorkflow(id, { nodes: wfNodes, edges: wfEdges })
+    try {
+      await api.updateWorkflow(id, { nodes: wfNodes, edges: wfEdges })
+      setSaveToast('✅ 已保存')
+    } catch (e) {
+      setSaveToast('❌ 保存失败: ' + e.message)
+    }
+    setTimeout(() => setSaveToast(null), 2000)
   }
 
   // 运行（弹出参数选择）
@@ -185,7 +201,51 @@ export function WorkflowEditor() {
 
   // 停止
   const handleStop = async () => {
-    await api.stopRun()
+    try {
+      await api.stopRun()
+      // 不立即设 idle，等后端 run_stopped/run_end 事件
+    } catch (e) {
+      console.error('停止失败:', e)
+    }
+  }
+
+  // 恢复历史运行的日志和状态
+  const handleSelectHistoryRun = async (runId) => {
+    try {
+      const detail = await api.getRunDetail(runId)
+      setCurrentRunId(runId)
+
+      // 恢复日志
+      const restoredLogs = (detail.logs || []).filter(l => l.type !== 'node_progress')
+      setLogs(restoredLogs)
+      setLogsExpanded(true)
+
+      // 恢复节点状态
+      const nodeStates = detail.node_states || {}
+      setNodes(nds => nds.map(n => {
+        const ns = nodeStates[n.id]
+        if (ns) {
+          return { ...n, data: { ...n.data, status: ns.status, progress: ns.progress } }
+        }
+        return { ...n, data: { ...n.data, status: null, progress: 0 } }
+      }))
+
+      // 恢复运行日期
+      if (detail.date) setRunDate(detail.date)
+
+      // 设置运行状态
+      setRunState({ status: detail.status === 'running' ? 'running' : 'idle' })
+    } catch (e) {
+      console.error('恢复运行历史失败:', e)
+    }
+  }
+
+  // 手动触发单个节点
+  const handleRunNode = async (nodeId) => {
+    await handleSave()
+    await api.runNode({ workflow_id: id, node_id: nodeId })
+    setRunState({ status: 'running' })
+    setLogsExpanded(true)
   }
 
   // 拖放新节点
@@ -244,6 +304,7 @@ export function WorkflowEditor() {
           )}
         </div>
         <div className="toolbar-right">
+          <button className="btn btn-ghost" onClick={() => setHistoryExpanded(!historyExpanded)}>📋 历史</button>
           <button className="btn btn-ghost" onClick={handleSave} disabled={runState?.status === 'running'}>💾 保存</button>
           <button className="btn btn-primary" onClick={handleRun} disabled={runState?.status === 'running'}>
             {runState?.status === 'running' ? '⚡ 执行中...' : '▶️ 运行'}
@@ -302,9 +363,20 @@ export function WorkflowEditor() {
 
         {/* Right Panel */}
         <PropertiesPanel
-          selectedNode={selectedNode}
+          selectedNode={selectedNode ? nodes.find(n => n.id === selectedNode.id) : null}
           nodeDefinitions={nodeDefinitions}
           onConfigChange={handleConfigChange}
+          onRunNode={handleRunNode}
+        />
+
+        {/* Run History Panel */}
+        <RunHistoryPanel
+          workflowId={id}
+          currentRunId={currentRunId}
+          refreshKey={historyRefreshKey}
+          onSelectRun={handleSelectHistoryRun}
+          isExpanded={historyExpanded}
+          onToggle={() => setHistoryExpanded(!historyExpanded)}
         />
       </div>
 
@@ -328,6 +400,25 @@ export function WorkflowEditor() {
           onConfirm={handleRunConfirm}
           onCancel={() => setShowRunDialog(false)}
         />
+      )}
+
+      {/* Save Toast */}
+      {saveToast && (
+        <div style={{
+          position: 'fixed',
+          bottom: 60,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          padding: '8px 20px',
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border-primary)',
+          borderRadius: 8,
+          fontSize: 14,
+          zIndex: 1000,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        }}>
+          {saveToast}
+        </div>
       )}
     </div>
   )

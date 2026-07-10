@@ -1,0 +1,63 @@
+{
+  "id": "b5bfc20e",
+  "name": "收集素材",
+  "nodes": [
+    {
+      "id": "collect_mrdg2vku",
+      "type": "collect",
+      "position": {
+        "x": 554.5,
+        "y": 293
+      },
+      "config": {
+        "run_date": "2026-07-09"
+      }
+    },
+    {
+      "id": "download_mrdg2wo7",
+      "type": "download",
+      "position": {
+        "x": 792.5,
+        "y": 293.75
+      },
+      "config": {}
+    },
+    {
+      "id": "cron_trigger_mrdg326m",
+      "type": "cron_trigger",
+      "position": {
+        "x": 189.5,
+        "y": 290.25
+      },
+      "config": {
+        "cron_expr": "*/1 * * * *",
+        "timezone": "Asia/Shanghai"
+      }
+    },
+    {
+      "id": "wechat_channel_mrdg3klr",
+      "type": "wechat_channel",
+      "position": {
+        "x": 1090,
+        "y": 279.75
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "source": "cron_trigger_mrdg326m",
+      "target": "collect_mrdg2vku"
+    },
+    {
+      "source": "collect_mrdg2vku",
+      "target": "download_mrdg2wo7"
+    },
+    {
+      "source": "download_mrdg2wo7",
+      "target": "wechat_channel_mrdg3klr"
+    }
+  ],
+  "created_at": "2026-07-09T19:49:59.385276",
+  "updated_at": "2026-07-10T01:00:10.583490"
+}

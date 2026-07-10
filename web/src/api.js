@@ -40,6 +40,9 @@ export const api = {
   startRun: (data) => request('/api/run', { method: 'POST', body: JSON.stringify(data) }),
   stopRun: () => request('/api/run/stop', { method: 'POST' }),
   getRunStatus: () => request('/api/run/status'),
+  getRunHistory: (workflowId) => request(`/api/runs/history/${workflowId}`),
+  getRunDetail: (runId) => request(`/api/runs/${runId}`),
+  runNode: (data) => request('/api/run/node', { method: 'POST', body: JSON.stringify(data) }),
 
   // Cache
   clearCache: (data) => request('/api/cache/clear', { method: 'POST', body: JSON.stringify(data) }),

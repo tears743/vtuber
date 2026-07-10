@@ -2,7 +2,7 @@
   "id": "default",
   "name": "VideoFactory 默认管线",
   "created_at": "2026-06-29T00:29:56.795781",
-  "updated_at": "2026-07-07T23:51:01.377011",
+  "updated_at": "2026-07-08T22:24:19.346474",
   "nodes": [
     {
       "id": "collect_1",

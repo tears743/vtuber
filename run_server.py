@@ -207,6 +207,5 @@ if __name__ == "__main__":
         "run_server:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
-        reload_dirs=[str(PROJECT_ROOT / "server")],
+        reload=False,
     )

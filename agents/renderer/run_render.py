@@ -393,6 +393,11 @@ def step_compose(config: dict, today: str, data_root: Path):
                         "author": author,
                     })
 
+        # 检测预合成的 visual 视频（visual_renderer 输出）
+        visual_mp4 = visual_dir / f"{script_id}_visual.mp4"
+        if not visual_mp4.exists():
+            visual_mp4 = None
+
         # 构建 FFmpeg 命令
         result = _compose_studio(
             studio_bg=studio_bg,
@@ -402,6 +407,7 @@ def step_compose(config: dict, today: str, data_root: Path):
 
             merged_audio=merged_audio,
             media_segments=media_segments,
+            visual_mp4=visual_mp4,
             duration_s=duration_s,
             output_mp4=output_mp4,
             script_id=script_id,
@@ -432,11 +438,14 @@ def _compose_studio(
     output_mp4: Path,
     script_id: str,
     today: str = "",
+    visual_mp4: Path = None,
 ) -> bool:
     """演播室合成核心逻辑
 
     演播室底层全程存在, 素材段通过 overlay + fade alpha 覆盖全屏,
     Live2D 用 split 分两路: 演播室模式居中大版, 素材段缩小到右下角.
+
+    当 visual_mp4 存在时，使用预合成视频替代逐段叠加（解决 filter chain 过长卡死）。
     """
     import subprocess
 
@@ -477,26 +486,35 @@ def _compose_studio(
         ov_idx = input_idx
         input_idx += 1
 
-    # Input 4+: 素材文件 (image/video_clip)
+    # Input 4+: 素材文件 或 预合成 visual 视频
+    use_precomposed = visual_mp4 is not None and visual_mp4.exists()
     media_input_map = []
-    for seg in media_segments:
-        if seg["type"] == "video_clip":
-            time_range = seg.get("time_range", [])
-            if time_range and len(time_range) >= 1:
-                cmd.extend(["-ss", str(time_range[0])])
-            cmd.extend(["-i", str(seg["source"])])
-        else:
-            # -noautorotate 跳过 EXIF 旋转处理，避免损坏 EXIF 导致解码失败
-            cmd.extend(["-noautorotate", "-loop", "1", "-i", str(seg["source"])])
-        media_input_map.append({
-            "input_idx": input_idx,
-            "start_s": seg["start_s"],
-            "end_s": seg["end_s"],
-            "type": seg["type"],
-            "play_audio": seg.get("play_audio", False),
-            "author": seg.get("author", ""),
-        })
+
+    if use_precomposed:
+        # 使用预合成视频（1 个输入替代 N 个素材）
+        cmd.extend(["-i", str(visual_mp4)])
+        vis_mp4_idx = input_idx
         input_idx += 1
+        logger.info(f"[compose] 使用预合成 visual: {visual_mp4.name}")
+    else:
+        # 逐个素材输入（兼容无预合成的情况）
+        for seg in media_segments:
+            if seg["type"] == "video_clip":
+                time_range = seg.get("time_range", [])
+                if time_range and len(time_range) >= 1:
+                    cmd.extend(["-ss", str(time_range[0])])
+                cmd.extend(["-i", str(seg["source"])])
+            else:
+                cmd.extend(["-noautorotate", "-loop", "1", "-i", str(seg["source"])])
+            media_input_map.append({
+                "input_idx": input_idx,
+                "start_s": seg["start_s"],
+                "end_s": seg["end_s"],
+                "type": seg["type"],
+                "play_audio": seg.get("play_audio", False),
+                "author": seg.get("author", ""),
+            })
+            input_idx += 1
 
     # Input N: TTS 音频
     has_audio = merged_audio is not None and Path(str(merged_audio)).exists()
@@ -524,7 +542,7 @@ def _compose_studio(
 
     # 2. Live2D
     if has_live2d:
-        if media_segments:
+        if media_segments or use_precomposed:
             fp.append(f"[{l2d_idx}:v]split=2[l2d_raw_big][l2d_raw_small]")
             fp.append("[l2d_raw_big]scale=864:1536[l2d_big]")
             fp.append("[l2d_raw_small]scale=540:960[l2d_small]")
@@ -552,48 +570,64 @@ def _compose_studio(
         "fontsize=28:fontcolor=white:x='1080-mod(t*200\\,2400)':y=1862[studio_ui]"
     )
 
-    # 5. Visual 轨内容已合并到 overlay webm（透明），不再需要单独层
+    # 5. Visual 轨
     cur = "studio_ui"
 
-    # 6. 素材段叠加 (等比居中 + 黑色填充 + fade + 作者标注)
-    for i, mseg in enumerate(media_input_map):
-        mi = mseg["input_idx"]
-        start = mseg["start_s"]
-        end = mseg["end_s"]
-        dur = end - start
-        author = mseg.get("author", "")
+    if use_precomposed:
+        # 预合成模式：1 个输入 + enable 表达式控制素材可见时段
+        # visual.mp4 已经包含正确时间轴（黑底填充间隙），直接按时间段 overlay
+        enable_parts = [
+            f"between(t,{seg['start_s']},{seg['end_s']})"
+            for seg in media_segments
+        ]
+        if enable_parts:
+            enable_expr = "+".join(enable_parts)
+            fp.append(
+                f"[{vis_mp4_idx}:v]scale=1080:1760:force_original_aspect_ratio=decrease,"
+                f"setsar=1,pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black[vis_pre]"
+            )
+            nxt = "v_vis"
+            fp.append(
+                f"[{cur}][vis_pre]overlay=0:80:"
+                f"enable='gte({enable_expr},1)':eof_action=pass[{nxt}]"
+            )
+            cur = nxt
+    else:
+        # 逐段叠加模式（原始逻辑，用于素材少或无预合成的情况）
+        for i, mseg in enumerate(media_input_map):
+            mi = mseg["input_idx"]
+            start = mseg["start_s"]
+            end = mseg["end_s"]
+            dur = end - start
+            author = mseg.get("author", "")
 
-        fade_in_d = min(FADE_DURATION, dur / 2)
-        fade_out_st = max(0, dur - FADE_DURATION)
+            fade_in_d = min(FADE_DURATION, dur / 2)
+            fade_out_st = max(0, dur - FADE_DURATION)
 
-        # 素材链: 等比缩放 → 黑色不透明pad到1760(留顶底bar) → trim → fade
-        media_filter = (
-            f"[{mi}:v]scale=1080:1760:force_original_aspect_ratio=decrease,setsar=1,"
-            f"pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black,"
-            f"setpts=PTS-STARTPTS,trim=duration={dur},setpts=PTS-STARTPTS,"
-            f"fade=t=in:st=0:d={fade_in_d},"
-            f"fade=t=out:st={fade_out_st}:d={FADE_DURATION}"
-        )
+            media_filter = (
+                f"[{mi}:v]scale=1080:1760:force_original_aspect_ratio=decrease,setsar=1,"
+                f"pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"setpts=PTS-STARTPTS,trim=duration={dur},setpts=PTS-STARTPTS,"
+                f"fade=t=in:st=0:d={fade_in_d},"
+                f"fade=t=out:st={fade_out_st}:d={FADE_DURATION}"
+            )
 
-        # author 标签由 Remotion overlay 层渲染（支持中文无乱码）
-        # 注意: 如果重新 align 了脚本，需要重新渲染 overlay 才能同步时间
+            media_filter += f",setpts=PTS+{start}/TB[media_{i}]"
+            fp.append(media_filter)
 
-        media_filter += f",setpts=PTS+{start}/TB[media_{i}]"
-        fp.append(media_filter)
-
-        nxt = f"v_m{i}"
-        fp.append(
-            f"[{cur}][media_{i}]overlay=0:80:eof_action=pass:shortest=0[{nxt}]"
-        )
-        cur = nxt
+            nxt = f"v_m{i}"
+            fp.append(
+                f"[{cur}][media_{i}]overlay=0:80:eof_action=pass:shortest=0[{nxt}]"
+            )
+            cur = nxt
 
     # 6. Live2D 小版本 (素材段右下角, 延迟0.5s出现/提前0.5s消失)
-    if has_live2d and media_segments:
+    if has_live2d and (media_segments or use_precomposed):
         delay = FADE_DURATION  # 和素材 fade 时长一致
         parts = [
-            f"between(t,{m['start_s']+delay},{m['end_s']-delay})"
-            for m in media_input_map
-            if m['end_s'] - m['start_s'] > delay * 3  # 太短的段不显示小角色
+            f"between(t,{seg['start_s']+delay},{seg['end_s']-delay})"
+            for seg in media_segments
+            if seg['end_s'] - seg['start_s'] > delay * 3
         ]
         if parts:
             enable_expr = "+".join(parts)
@@ -649,7 +683,7 @@ def _compose_studio(
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=1800, encoding="utf-8", errors="replace",
+            timeout=18000, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             size_mb = output_mp4.stat().st_size / (1024 * 1024)

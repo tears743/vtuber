@@ -44,7 +44,7 @@ class CollectNode(BaseNode):
     retry_delay = 5.0
     config_schema = {
         "run_date": {
-            "type": "str", "label": "运行日期",
+            "type": "date", "label": "运行日期",
             "default": "",
             "description": "指定采集日期（YYYY-MM-DD），留空则自动使用当天"
         },

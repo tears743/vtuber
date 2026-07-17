@@ -3,11 +3,10 @@ Compose 节点 — 最终合成
 
 对应: run_render.py → step_compose()
 """
-import json
 import logging
 from pathlib import Path
 
-from server.nodes.base import BaseNode
+from server.nodes.base import BaseNode, NodeInput, NodeOutput
 from server.nodes.registry import register
 from server.models import PipelineContext, FinalData
 
@@ -19,7 +18,19 @@ class ComposeNode(BaseNode):
     type = "compose"
     label = "最终合成"
     category = "输出"
-    reads = ["aligned", "audio", "overlay", "visual", "live2d", "media"]
+    description = "合并 Visual、Overlay、字幕、Live2D 和音频生成最终视频"
+    cache_revision = "studio_segment_fade_v6"
+    inputs = [
+        NodeInput("aligned", type="AlignedData", label="多轨脚本", required=True),
+        NodeInput("audio", type="AudioData", label="音频", required=True),
+        NodeInput("overlay", type="OverlayData", label="Overlay 图层", required=False),
+        NodeInput("visual", type="VisualData", label="Visual 图层", required=False),
+        NodeInput("subtitles", type="SubtitleData", label="字幕轨", required=True),
+        NodeInput("live2d", type="Live2DData", label="Live2D 图层", required=False),
+        NodeInput("media", type="MediaData", label="媒体素材", required=False),
+    ]
+    outputs = [NodeOutput("final", type="FinalData", label="最终视频")]
+    reads = ["aligned", "audio", "overlay", "visual", "subtitles", "live2d", "media"]
     writes = ["final"]
     output_dirs = ["final"]
     config_schema = {
@@ -60,9 +71,17 @@ class ComposeNode(BaseNode):
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-        from agents.renderer.run_render import step_compose
+        from agents.renderer.run_render import _probe_video_duration, step_compose
 
         on_progress("最终合成中...", 0.0)
+
+        # Bind graph inputs to the compatibility context used by the renderer.
+        for name in ("aligned", "audio", "overlay", "visual", "subtitles", "live2d", "media"):
+            value = self.get_input(name)
+            if value is not None:
+                setattr(ctx, name, value)
+        if ctx.subtitles is None:
+            raise RuntimeError("缺少 subtitles 输入，请连接字幕生成节点")
 
         config = ctx.config
         data_root = ctx.data_root
@@ -70,7 +89,13 @@ class ComposeNode(BaseNode):
 
         # 直接调用现有函数（同步阻塞，放到线程）
         import asyncio
-        await asyncio.to_thread(step_compose, config, today, data_root)
+        await asyncio.to_thread(
+            step_compose,
+            config,
+            today,
+            data_root,
+            lambda message, progress: on_progress(message, progress),
+        )
 
         # 扫描产出
         output_dir = data_root / today / "final"
@@ -80,20 +105,12 @@ class ComposeNode(BaseNode):
         if output_dir.exists():
             for f in output_dir.glob("*.mp4"):
                 script_id = f.stem
+                duration = _probe_video_duration(f)
+                if duration is None:
+                    logger.warning("忽略不可读取的合成产物: %s", f)
+                    continue
                 files[script_id] = f
-                # 尝试获取时长
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        ["ffprobe", "-v", "quiet", "-print_format", "json",
-                         "-show_format", str(f)],
-                        capture_output=True, text=True, encoding="utf-8"
-                    )
-                    info = json.loads(result.stdout)
-                    duration = float(info.get("format", {}).get("duration", 0))
-                    total_duration_s[script_id] = duration
-                except Exception:
-                    pass
+                total_duration_s[script_id] = duration
 
         ctx.final = FinalData(
             dir=output_dir,
@@ -101,11 +118,14 @@ class ComposeNode(BaseNode):
             success_count=len(files),
             total_duration_s=total_duration_s,
         )
+        if not files:
+            raise RuntimeError("最终合成未生成任何视频")
         on_progress(f"合成完成: {len(files)} 个视频", 1.0)
+        return {"final": ctx.final}
 
     def restore_cache(self, ctx):
         """从磁盘恢复 final 数据"""
-        import json, subprocess
+        from agents.renderer.run_render import _probe_video_duration
         from server.models import FinalData
         output_dir = ctx.data_root / ctx.date / "final"
         files = {}
@@ -113,18 +133,11 @@ class ComposeNode(BaseNode):
         if output_dir.exists():
             for f in output_dir.glob("*.mp4"):
                 script_id = f.stem
+                duration = _probe_video_duration(f)
+                if duration is None:
+                    continue
                 files[script_id] = f
-                try:
-                    result = subprocess.run(
-                        ["ffprobe", "-v", "quiet", "-print_format", "json",
-                         "-show_format", str(f)],
-                        capture_output=True, text=True, encoding="utf-8"
-                    )
-                    info = json.loads(result.stdout)
-                    duration = float(info.get("format", {}).get("duration", 0))
-                    total_duration_s[script_id] = duration
-                except Exception:
-                    pass
+                total_duration_s[script_id] = duration
         ctx.final = FinalData(
             dir=output_dir,
             files=files,

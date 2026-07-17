@@ -9,6 +9,11 @@ import json
 import logging
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # 确保项目根目录在 sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 

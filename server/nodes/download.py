@@ -28,6 +28,11 @@ class DownloadNode(BaseNode):
             "default": 10, "min": 1, "max": 20,
             "description": "kukutool 下载失败后的最大重试次数"
         },
+        "github_readme_retries": {
+            "type": "int", "label": "GitHub README 重试次数",
+            "default": 3, "min": 1, "max": 10,
+            "description": "每个 GitHub Trending 仓库 README 下载失败后的重试次数"
+        },
         "opencli_binary": {
             "type": "str", "label": "OpenCLI 路径",
             "default": "node D:/workspace/opencli/dist/src/main.js"
@@ -54,11 +59,22 @@ class DownloadNode(BaseNode):
 
         opencli = self.get_config("opencli_binary", config.get("opencli", {}).get("binary", "opencli"))
 
-        downloader = MediaDownloader(opencli_binary=opencli)
+        downloader = MediaDownloader(
+            opencli_binary=opencli,
+            github_readme_retries=self.get_config("github_readme_retries", 3),
+        )
 
         on_progress("下载素材中...", 0.1)
         import asyncio
-        manifest = await asyncio.to_thread(downloader.download_all, collected_dir, media_dir)
+        def report_download(message, progress):
+            on_progress(message, 0.1 + 0.8 * progress)
+
+        manifest = await asyncio.to_thread(
+            downloader.download_all,
+            collected_dir,
+            media_dir,
+            report_download,
+        )
         on_progress("下载完成", 0.9)
 
         # 统计
@@ -75,7 +91,11 @@ class DownloadNode(BaseNode):
             total_videos=total_videos,
             total_readmes=total_readmes,
         )
-        on_progress(f"下载完成: {len(manifest)} 条素材, {total_images} 图片, {total_videos} 视频", 1.0)
+        on_progress(
+            f"下载完成: {len(manifest)} 条素材, {total_images} 图片, "
+            f"{total_videos} 视频, {total_readmes} README",
+            1.0,
+        )
 
     def restore_cache(self, ctx):
         """从磁盘恢复 media 数据，并修补 manifest 中的缺失条目"""

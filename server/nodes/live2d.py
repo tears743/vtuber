@@ -55,7 +55,12 @@ class Live2DNode(BaseNode):
 
         max_workers = self.get_config("workers", 2)
         import asyncio
-        await asyncio.to_thread(_step_live2d, ctx.date, max_workers)
+        await asyncio.to_thread(
+            _step_live2d,
+            ctx.date,
+            max_workers,
+            lambda message, progress: on_progress(message, 0.05 + 0.9 * progress),
+        )
 
         # 扫描产出
         live2d_dir = ctx.data_root / ctx.date / "live2d"

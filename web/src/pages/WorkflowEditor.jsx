@@ -69,6 +69,8 @@ export function WorkflowEditor() {
             label: def.label || n.type,
             type: n.type,
             category: def.category || '',
+            inputs: def.inputs || [],
+            outputs: def.outputs || [],
             config: n.config || {},
             status: null,
             progress: 0,
@@ -79,6 +81,8 @@ export function WorkflowEditor() {
         id: `edge-${i}`,
         source: e.source,
         target: e.target,
+        sourceHandle: e.source_handle || e.sourceHandle,
+        targetHandle: e.target_handle || e.targetHandle,
         animated: false,
         style: { stroke: 'rgba(99,102,241,0.4)', strokeWidth: 2 },
       }))
@@ -90,18 +94,17 @@ export function WorkflowEditor() {
   // WebSocket 连接
   useEffect(() => {
     wsRef.current = createRunSocket((msg) => {
-      setRunState(msg)
       // 更新节点状态
       if (msg.type === 'node_start') {
         setNodes(nds => nds.map(n =>
           n.id === msg.data.node_id
-            ? { ...n, data: { ...n.data, status: 'running', progress: 0 } }
+            ? { ...n, data: { ...n.data, status: 'running', progress: 0, progressMessage: '正在执行...' } }
             : n
         ))
       } else if (msg.type === 'node_progress') {
         setNodes(nds => nds.map(n =>
           n.id === msg.data.node_id
-            ? { ...n, data: { ...n.data, progress: msg.data.progress } }
+            ? { ...n, data: { ...n.data, progress: msg.data.progress, progressMessage: msg.data.message || '' } }
             : n
         ))
       } else if (msg.type === 'node_complete') {
@@ -112,19 +115,19 @@ export function WorkflowEditor() {
         }
         setNodes(nds => nds.map(n =>
           n.id === msg.data.node_id
-            ? { ...n, data: { ...n.data, status: 'completed', progress: 1 } }
+            ? { ...n, data: { ...n.data, status: 'completed', progress: 1, progressMessage: '已完成' } }
             : n
         ))
       } else if (msg.type === 'node_error') {
         setNodes(nds => nds.map(n =>
           n.id === msg.data.node_id
-            ? { ...n, data: { ...n.data, status: 'failed' } }
+            ? { ...n, data: { ...n.data, status: 'failed', progressMessage: msg.data.error || '执行失败' } }
             : n
         ))
       } else if (msg.type === 'node_cached') {
         setNodes(nds => nds.map(n =>
           n.id === msg.data.node_id
-            ? { ...n, data: { ...n.data, status: 'cached', progress: 1 } }
+            ? { ...n, data: { ...n.data, status: 'cached', progress: 1, progressMessage: '缓存命中' } }
             : n
         ))
       } else if (msg.type === 'log') {
@@ -138,8 +141,12 @@ export function WorkflowEditor() {
           setCurrentRunId(msg.data.run_id)
           setHistoryExpanded(true)
         }
+      } else if (msg.type === 'run_error') {
+        setRunState({ status: 'failed', error: msg.data?.error || '运行失败' })
+        setLogsExpanded(true)
       } else if (msg.type === 'run_end' || msg.type === 'run_stopped') {
-        setRunState({ status: 'idle' })
+        const status = msg.type === 'run_stopped' ? 'stopped' : (msg.data?.status || 'completed')
+        setRunState({ status, error: msg.data?.error })
         setHistoryRefreshKey(k => k + 1)
       }
     })
@@ -173,10 +180,16 @@ export function WorkflowEditor() {
       position: n.position,
       config: n.data.config || {},
     }))
-    const wfEdges = edges.map(e => ({ source: e.source, target: e.target }))
+    const wfEdges = edges.map(e => ({
+      source: e.source,
+      source_handle: e.sourceHandle,
+      target: e.target,
+      target_handle: e.targetHandle,
+    }))
     try {
-      await api.updateWorkflow(id, { nodes: wfNodes, edges: wfEdges })
-      setSaveToast('✅ 已保存')
+      const updated = await api.updateWorkflow(id, { nodes: wfNodes, edges: wfEdges })
+      setWorkflow(updated)
+      setSaveToast(updated.draft ? '已保存为草稿' : '✅ 已保存')
     } catch (e) {
       setSaveToast('❌ 保存失败: ' + e.message)
     }
@@ -185,6 +198,11 @@ export function WorkflowEditor() {
 
   // 运行（弹出参数选择）
   const handleRun = () => {
+    if (workflow?.draft && workflow?.validation_errors?.length) {
+      setSaveToast('草稿存在校验问题，修复后才能运行')
+      setTimeout(() => setSaveToast(null), 2500)
+      return
+    }
     setShowRunDialog(true)
   }
 
@@ -194,7 +212,7 @@ export function WorkflowEditor() {
     setRunState({ status: 'running' })  // 立即设置状态
     setRunDate(date)  // 记录运行日期供 timeline 使用
     // 重置节点状态
-    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, status: null, progress: 0 } })))
+    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, status: null, progress: 0, progressMessage: '' } })))
     await handleSave()
     await api.startRun({ workflow_id: id, date, force_no_cache: forceNoCache })
   }
@@ -202,7 +220,11 @@ export function WorkflowEditor() {
   // 停止
   const handleStop = async () => {
     try {
-      await api.stopRun()
+      const res = await api.stopRun()
+      if (res?.stopped) {
+        setRunState({ status: 'stopped' })
+        setHistoryRefreshKey(k => k + 1)
+      }
       // 不立即设 idle，等后端 run_stopped/run_end 事件
     } catch (e) {
       console.error('停止失败:', e)
@@ -225,16 +247,16 @@ export function WorkflowEditor() {
       setNodes(nds => nds.map(n => {
         const ns = nodeStates[n.id]
         if (ns) {
-          return { ...n, data: { ...n.data, status: ns.status, progress: ns.progress } }
+          return { ...n, data: { ...n.data, status: ns.status, progress: ns.progress, progressMessage: ns.message || '' } }
         }
-        return { ...n, data: { ...n.data, status: null, progress: 0 } }
+        return { ...n, data: { ...n.data, status: null, progress: 0, progressMessage: '' } }
       }))
 
       // 恢复运行日期
       if (detail.date) setRunDate(detail.date)
 
       // 设置运行状态
-      setRunState({ status: detail.status === 'running' ? 'running' : 'idle' })
+      setRunState({ status: detail.status || 'idle' })
     } catch (e) {
       console.error('恢复运行历史失败:', e)
     }
@@ -242,10 +264,41 @@ export function WorkflowEditor() {
 
   // 手动触发单个节点
   const handleRunNode = async (nodeId) => {
+    if (workflow?.draft && workflow?.validation_errors?.length) {
+      setSaveToast('草稿存在校验问题，修复后才能运行')
+      setTimeout(() => setSaveToast(null), 2500)
+      return
+    }
     await handleSave()
     await api.runNode({ workflow_id: id, node_id: nodeId })
     setRunState({ status: 'running' })
     setLogsExpanded(true)
+  }
+
+  const handleRunFromNode = async (nodeId) => {
+    if (workflow?.draft && workflow?.validation_errors?.length) {
+      setSaveToast('草稿存在校验问题，修复后才能运行')
+      setTimeout(() => setSaveToast(null), 2500)
+      return
+    }
+    const date = runDate || new Date().toISOString().slice(0, 10)
+    await handleSave()
+    setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, status: null, progress: 0, progressMessage: '' } })))
+    await api.startRun({ workflow_id: id, date, resume_from_node: nodeId })
+    setRunState({ status: 'running' })
+    setRunDate(date)
+    setLogsExpanded(true)
+  }
+
+  const handleClearNodeCache = async (nodeId) => {
+    const date = runDate || new Date().toISOString().slice(0, 10)
+    try {
+      const res = await api.clearNodeCache({ workflow_id: id, node_id: nodeId, date })
+      setSaveToast(`已清除节点缓存: ${res.cleared || 0} 项`)
+    } catch (e) {
+      setSaveToast('清除节点缓存失败: ' + e.message)
+    }
+    setTimeout(() => setSaveToast(null), 2500)
   }
 
   // 拖放新节点
@@ -274,6 +327,8 @@ export function WorkflowEditor() {
         label: def.label,
         type: def.type,
         category: def.category,
+        inputs: def.inputs || [],
+        outputs: def.outputs || [],
         config: {},
         status: null,
         progress: 0,
@@ -292,6 +347,7 @@ export function WorkflowEditor() {
   }
 
   if (!workflow) return <div className="page-workflows"><p>加载中...</p></div>
+  const validationErrors = workflow.validation_errors || []
 
   return (
     <div style={{ display: 'flex', height: '100vh', flexDirection: 'column' }}>
@@ -299,8 +355,26 @@ export function WorkflowEditor() {
       <div className="toolbar">
         <div className="toolbar-left">
           <span className="toolbar-title">{workflow.name}</span>
+          {workflow.draft && (
+            <span style={{
+              marginLeft: 8,
+              padding: '2px 8px',
+              borderRadius: 4,
+              background: 'rgba(245,158,11,0.16)',
+              color: '#f59e0b',
+              fontSize: '0.75rem',
+            }}>
+              草稿
+            </span>
+          )}
           {runState?.status === 'running' && (
             <span className="toolbar-status running">● 运行中</span>
+          )}
+          {runState?.status === 'failed' && (
+            <span className="toolbar-status failed">失败</span>
+          )}
+          {runState?.status === 'stopped' && (
+            <span className="toolbar-status stopped">已停止</span>
           )}
         </div>
         <div className="toolbar-right">
@@ -312,6 +386,19 @@ export function WorkflowEditor() {
           <button className="btn btn-danger" onClick={handleStop} disabled={runState?.status !== 'running'}>⏹ 停止</button>
         </div>
       </div>
+
+      {workflow.draft && validationErrors.length > 0 && (
+        <div style={{
+          padding: '10px 16px',
+          background: 'rgba(245,158,11,0.1)',
+          borderBottom: '1px solid rgba(245,158,11,0.3)',
+          color: '#f59e0b',
+          fontSize: '0.82rem',
+        }}>
+          <strong>草稿存在校验问题，暂不能运行：</strong>
+          <span style={{ marginLeft: 8 }}>{validationErrors.join('；')}</span>
+        </div>
+      )}
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         {/* Left Node Library */}
@@ -367,6 +454,8 @@ export function WorkflowEditor() {
           nodeDefinitions={nodeDefinitions}
           onConfigChange={handleConfigChange}
           onRunNode={handleRunNode}
+          onRunFromNode={handleRunFromNode}
+          onClearNodeCache={handleClearNodeCache}
         />
 
         {/* Run History Panel */}

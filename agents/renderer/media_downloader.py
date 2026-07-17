@@ -21,11 +21,17 @@ logger = logging.getLogger(__name__)
 class MediaDownloader:
     """素材下载器"""
     
-    def __init__(self, opencli_binary: str = "opencli", timeout: int = 30):
+    def __init__(
+        self,
+        opencli_binary: str = "opencli",
+        timeout: int = 30,
+        github_readme_retries: int = 3,
+    ):
         self.opencli = opencli_binary
         self.timeout = timeout
+        self.github_readme_retries = max(1, int(github_readme_retries))
     
-    def download_all(self, collected_dir: Path, media_dir: Path) -> dict:
+    def download_all(self, collected_dir: Path, media_dir: Path, progress_callback=None) -> dict:
         """
         扫描 collected/ 中所有文件的 visual_assets，下载到 media/
         增量更新：保留已有的 description/transcript 等字段
@@ -42,13 +48,21 @@ class MediaDownloader:
                 manifest = json.load(f)
         else:
             manifest = {}
+
+        expected_github = self._load_expected_github_repos(collected_dir)
+        downloaded_github = set()
         
         # URL 级去重：追踪本次运行中已下载的视频 URL -> 本地路径
         downloaded_video_urls = {}
         # 直链级去重：追踪已使用的 direct_url（防止 kukutool 返回相同直链）
         downloaded_direct_urls = {}
         
-        for filepath in sorted(collected_dir.glob("*.json")):
+        collected_files = sorted(collected_dir.glob("*.json"))
+        total_files = len(collected_files)
+        if progress_callback:
+            progress_callback(f"准备下载 {total_files} 条素材", 0.0)
+
+        for file_index, filepath in enumerate(collected_files, start=1):
             try:
                 data = self._load_json(filepath)
                 if not data:
@@ -132,12 +146,22 @@ class MediaDownloader:
                                     existing["video"] = {"path": str(local_path)}
                                     downloaded_video_urls[video_url] = str(local_path)
                 
-                # GitHub README 下载
-                if source in ("github_trending", "GitHub Trending") and not existing.get("readme"):
+                # GitHub Trending 必须逐仓库下载并校验 README。
+                if source in ("github_trending", "GitHub Trending"):
                     repo_url = data.get("url", "") or assets.get("readme_url", "")
-                    readme_result = self._download_github_readme(repo_url, item_dir)
-                    if readme_result:
-                        existing["readme"] = readme_result
+                    repo_key = self._github_repo_key(repo_url)
+                    if repo_key:
+                        expected_github.add(repo_key)
+                    existing["source"] = "github_trending"
+                    existing["source_url"] = repo_url
+
+                    if not self._readme_entry_valid(existing.get("readme")):
+                        existing.pop("readme", None)
+                        readme_result = self._download_github_readme_with_retries(repo_url, item_dir)
+                        if readme_result:
+                            existing["readme"] = readme_result
+                    if repo_key and self._readme_entry_valid(existing.get("readme")):
+                        downloaded_github.add(repo_key)
                 
                 # 保留 author 信息（用于视频播放时显示 @作者 标签）
                 author = data.get("author", "")
@@ -155,6 +179,12 @@ class MediaDownloader:
                     
             except Exception as e:
                 logger.warning(f"[downloader] 处理失败 {filepath.name}: {e}")
+            finally:
+                if progress_callback:
+                    progress_callback(
+                        f"下载素材 [{file_index}/{total_files}]: {filepath.stem}",
+                        file_index / max(total_files, 1),
+                    )
         
         # 保存 manifest
         manifest_path = media_dir / "manifest.json"
@@ -168,8 +198,93 @@ class MediaDownloader:
             f"[downloader] 完成: {len(manifest)} 条素材, "
             f"{total_images} 图片, {total_videos} 视频, {total_readmes} README"
         )
+
+        missing_github = sorted(expected_github - downloaded_github)
+        if missing_github:
+            logger.warning(
+                "[downloader] GitHub Trending 跳过无有效 README 的仓库: %s/%s，跳过: %s",
+                len(downloaded_github & expected_github),
+                len(expected_github),
+                ", ".join(missing_github),
+            )
+            (media_dir / "github_readme_skipped.json").write_text(
+                json.dumps(
+                    {
+                        "reason": "README missing or unavailable after retries",
+                        "repositories": missing_github,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        if expected_github:
+            logger.info(
+                "[downloader] GitHub Trending README 可用: %s/%s, 跳过: %s",
+                len(downloaded_github & expected_github),
+                len(expected_github),
+                len(missing_github),
+            )
         
         return manifest
+
+    def _load_expected_github_repos(self, collected_dir: Path) -> set[str]:
+        snapshot_path = collected_dir / ".meta" / "github_trending.json"
+        if not snapshot_path.exists():
+            return set()
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        repositories = snapshot.get("repositories", []) if isinstance(snapshot, dict) else []
+        keys = {
+            self._github_repo_key(item.get("url") or item.get("link") or "")
+            for item in repositories
+            if isinstance(item, dict)
+        }
+        keys.discard("")
+        return keys
+
+    @staticmethod
+    def _github_repo_key(repo_url: str) -> str:
+        import re
+
+        text = str(repo_url or "").strip()
+        marker = "github.com/"
+        if marker not in text.lower():
+            return ""
+        tail = re.split(marker, text, maxsplit=1, flags=re.IGNORECASE)[-1]
+        parts = [part for part in tail.split("?")[0].strip("/").split("/") if part]
+        if len(parts) < 2:
+            return ""
+        return "/".join(parts[:2]).removesuffix(".git").lower()
+
+    @staticmethod
+    def _readme_entry_valid(entry) -> bool:
+        if not isinstance(entry, dict) or not entry.get("path"):
+            return False
+        path = Path(entry["path"])
+        return path.exists() and path.is_file() and path.stat().st_size > 10
+
+    def _download_github_readme_with_retries(self, repo_url: str, item_dir: Path) -> dict | None:
+        for attempt in range(1, self.github_readme_retries + 1):
+            readme_path = item_dir / "README.md"
+            if readme_path.exists() and readme_path.stat().st_size <= 10:
+                readme_path.unlink(missing_ok=True)
+            result = self._download_github_readme(repo_url, item_dir)
+            if self._readme_entry_valid(result):
+                return result
+            if result and result.get("path"):
+                Path(result["path"]).unlink(missing_ok=True)
+            logger.warning(
+                "[downloader] GitHub README 下载失败 (%s/%s): %s",
+                attempt,
+                self.github_readme_retries,
+                repo_url,
+            )
+            if attempt < self.github_readme_retries:
+                time.sleep(min(2 ** attempt, 5))
+        return None
     
     def _download_image(self, url: str, item_dir: Path, name: str) -> Path | None:
         """下载单张图片"""
@@ -497,13 +612,46 @@ class MediaDownloader:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://www.douyin.com/",
             }
-            r = requests.get(video_direct_url, headers=headers, stream=True, timeout=300)
+            parsed = urlparse(video_direct_url)
+            max_download_seconds = 120
+            started_at = time.monotonic()
+            logger.info(
+                "[kukutool] 开始下载直链: host=%s path=%s timeout=%ss",
+                parsed.netloc,
+                parsed.path[:80],
+                max_download_seconds,
+            )
+            r = requests.get(video_direct_url, headers=headers, stream=True, timeout=(10, 30))
             r.raise_for_status()
+            content_length = r.headers.get("content-length", "")
+            content_type = r.headers.get("content-type", "")
+            logger.info(
+                "[kukutool] 直链响应: status=%s content_length=%s content_type=%s",
+                r.status_code,
+                content_length or "?",
+                content_type or "?",
+            )
             
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            downloaded = 0
+            last_log_at = started_at
             with open(output_path, "wb") as f:
                 for chunk in r.iter_content(8192):
-                    f.write(chunk)
+                    now = time.monotonic()
+                    if now - started_at > max_download_seconds:
+                        raise TimeoutError(
+                            f"download exceeded {max_download_seconds}s, downloaded={downloaded / (1024 * 1024):.1f}MB"
+                        )
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                    if now - last_log_at >= 10:
+                        logger.info(
+                            "[kukutool] 下载中: %.1fMB elapsed=%.1fs",
+                            downloaded / (1024 * 1024),
+                            now - started_at,
+                        )
+                        last_log_at = now
             
             size_mb = output_path.stat().st_size / (1024 * 1024)
             if size_mb < 0.1:
@@ -518,7 +666,16 @@ class MediaDownloader:
             return True
             
         except Exception as e:
-            logger.warning(f"[kukutool] Error: {e}")
+            elapsed = None
+            try:
+                elapsed = time.monotonic() - started_at
+            except Exception:
+                pass
+            extra = f" elapsed={elapsed:.1f}s" if elapsed is not None else ""
+            if "downloaded" in locals():
+                extra += f" downloaded={downloaded / (1024 * 1024):.1f}MB"
+            logger.warning(f"[kukutool] Error:{extra} {e}")
+            output_path.unlink(missing_ok=True)
             browser_cmd("close", timeout=5)
             return False
     

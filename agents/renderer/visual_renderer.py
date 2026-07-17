@@ -35,7 +35,13 @@ def render_visual_remotion(
     """
     tracks = script.get("tracks", {})
     visual_items = tracks.get("visual", [])
-    remotion_items = [v for v in visual_items if v.get("type") == "remotion"]
+    from agents.renderer.remotion_renderer import normalize_remotion_item
+
+    remotion_items = [
+        normalize_remotion_item(v)
+        for v in visual_items
+        if v.get("type") == "remotion"
+    ]
 
     if not remotion_items:
         return None
@@ -111,9 +117,7 @@ def render_visual_image(
     output_path: Path,
     timeout: int = 30,
 ) -> Path | None:
-    """
-    将图片渲染为带 Ken Burns 效果的视频片段
-    """
+    """Render the complete image without cropping or zooming the source."""
     source = item.get("source", "")
     duration_ms = item.get("duration_ms", 5000)
     duration_s = duration_ms / 1000.0
@@ -124,17 +128,23 @@ def render_visual_image(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Ken Burns: 从 1.0 缩放到 1.15，同时轻微平移
+    # Keep the complete source visible. A blurred cover copy fills the portrait
+    # canvas while the untouched-aspect foreground is centered above it.
+    filter_complex = (
+        "[0:v]split=2[bg_src][fg_src];"
+        "[bg_src]scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,boxblur=24:2,eq=brightness=-0.18,setsar=1[bg];"
+        "[fg_src]scale=1000:1720:force_original_aspect_ratio=decrease,"
+        "setsar=1[fg];"
+        "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[outv]"
+    )
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
         "-i", str(source),
-        "-vf", (
-            f"scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,"
-            f"zoompan=z='min(zoom+0.0005,1.15)':d={int(duration_s * FPS)}:s=1080x1920:fps={FPS},"
-            f"format=yuv420p"
-        ),
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-r", str(FPS),
         "-t", str(duration_s),
         "-c:v", "libx264",
         "-preset", "fast",
@@ -242,15 +252,6 @@ def render_visual_video_clip(
         range_dur = time_range[1] - time_range[0]
         duration_s = min(duration_s, range_dur)
     
-    # fade 参数：transition: "fade" 时用更长的淡入淡出
-    if item.get("transition") == "fade":
-        fade_in = 0.5
-        fade_out_dur = 0.8
-    else:
-        fade_in = 0.3
-        fade_out_dur = 0.5
-    fade_out_start = max(0, duration_s - fade_out_dur)
-
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(start_s),
@@ -259,8 +260,6 @@ def render_visual_video_clip(
         "-vf", (
             "scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,"
-            f"fade=t=in:st=0:d={fade_in},"
-            f"fade=t=out:st={fade_out_start}:d=0.5,"
             "format=yuv420p"
         ),
         "-c:v", "libx264",
@@ -467,56 +466,31 @@ def concat_visual_segments(
 def render_script_visual(
     script: dict,
     output_dir: Path,
+    progress_callback=None,
 ) -> Path | None:
     """
     渲染单个脚本的完整 visual 轨视频
 
-    策略：
-    - 如果全是 remotion 类型 → 直接用 Remotion 渲染一个完整 MP4
-    - 如果混合类型 → 分段渲染再拼接
+    Only image/video_clip entries belong to the opaque material layer.
+    Remotion entries are rendered by the transparent Overlay layer.
     """
     script_id = script.get("id", "unknown")
     tracks = script.get("tracks", {})
-    visual_items = tracks.get("visual", [])
-    overlay_items = tracks.get("overlay", [])
+    visual_items = [
+        item for item in tracks.get("visual", [])
+        if item.get("type") in {"image", "video_clip"}
+    ]
     total_ms = script.get("total_duration_ms", 30000)
+    output_path = output_dir / f"{script_id}_visual.mp4"
 
     if not visual_items:
-        logger.info(f"[visual] {script_id}: 无 visual 轨")
+        output_path.unlink(missing_ok=True)
+        logger.info(f"[visual] {script_id}: 无图片/视频素材，跳过不透明 Visual")
         return None
-
-    # 过滤掉跟 overlay 重复的 highlight_text（避免双层显示）
-    overlay_set = set()
-    for ov in overlay_items:
-        if ov.get("type") == "highlight_text":
-            key = (ov.get("start_ms", 0), ov.get("props", {}).get("text", ""))
-            overlay_set.add(key)
-    
-    filtered_items = []
-    for v in visual_items:
-        if (v.get("type") == "remotion" and 
-            v.get("component") == "highlight_text"):
-            key = (v.get("start_ms", 0), v.get("props", {}).get("text", ""))
-            if key in overlay_set:
-                logger.debug(f"[visual] 跳过重复 highlight: {key[1]} @{key[0]}ms")
-                continue
-        filtered_items.append(v)
-    
-    if len(filtered_items) < len(visual_items):
-        logger.info(f"[visual] {script_id}: 过滤 {len(visual_items) - len(filtered_items)} 个重复 highlight_text")
-    visual_items = filtered_items
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 检查是否全部是 remotion
-    types = set(v.get("type") for v in visual_items)
-
-    if types == {"remotion"}:
-        # 全部 remotion → 已合并到 overlay 渲染，无需单独生成 visual.mp4
-        logger.info(f"[visual] {script_id}: 全 remotion，已合并到 overlay，跳过")
-        return None
-
-    # 混合类型 → 分段处理
+    # Material segments are precomposed on their original timeline.
     segments = []
     tmp_dir = output_dir / f".tmp_{script_id}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -530,36 +504,31 @@ def render_script_visual(
             result = render_visual_image(item, seg_path)
         elif item_type == "video_clip":
             result = render_visual_video_clip(item, seg_path)
-        elif item_type == "remotion":
-            # 单个 remotion 片段 → 小的 Remotion 渲染
-            mini_script = {
-                "id": f"{script_id}_seg{i}",
-                "total_duration_ms": item.get("duration_ms", 5000),
-                "tracks": {
-                    "visual": [dict(item, start_ms=0)],
-                    "background": tracks.get("background", []),
-                },
-            }
-            result = render_visual_remotion(mini_script, seg_path)
         else:
             logger.warning(f"[visual] 未知类型: {item_type}")
             result = None
 
         if result:
             segments.append((start_ms, result))
+        if progress_callback:
+            progress_callback(
+                f"素材段 [{i + 1}/{len(visual_items)}]",
+                0.1 + 0.75 * (i + 1) / max(len(visual_items), 1),
+            )
 
     if not segments:
         logger.warning(f"[visual] {script_id}: 所有分段渲染失败")
         return None
 
     # 拼接
-    output_path = output_dir / f"{script_id}_visual.mp4"
     bg_tracks = tracks.get("background", [])
     bg_color = "0x0f0f23"
     if bg_tracks and bg_tracks[0].get("colors"):
         c = bg_tracks[0]["colors"][0]
         bg_color = "0x" + c.lstrip("#")
 
+    if progress_callback:
+        progress_callback("拼接 Visual 时间轴", 0.9)
     result = concat_visual_segments(segments, total_ms, output_path, bg_color)
 
     # 清理临时文件

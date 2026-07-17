@@ -1,0 +1,7 @@
+name: tech_broadcast_script_agent
+version: 1.0.0
+author: ai-generated
+description: 写一个节点，节点作用是：根据输入的素材内容，让该节点agent 生成口播文案脚本，口播文案风格为科技播报，有爆点，有梗，严格遵守事实，口播前三秒要吸引人
+nodes:
+- path: node.py
+  type: tech_broadcast_script_agent

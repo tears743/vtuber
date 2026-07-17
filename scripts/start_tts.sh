@@ -12,8 +12,9 @@ echo "=========================================="
 # 激活 venv
 source /home/tears/voxcpm_env/bin/activate
 
-# 参考音频（声音克隆用）
-REF_WAV="/mnt/d/VoxCPM/baoer.mp3"
+# 参考音频（极致克隆用）
+REF_WAV="/home/tears/baoer.mp3"
+SERVER_SCRIPT="/mnt/d/workspace/videoFactory/scripts/tts_server.py"
 if [ ! -f "$REF_WAV" ]; then
     echo "[WARN] Reference WAV not found: $REF_WAV"
     echo "[WARN] Running in zero-shot mode (no voice cloning)"
@@ -28,10 +29,8 @@ echo "Device: $DEVICE"
 echo "Reference: $REF_WAV"
 echo "=========================================="
 
-cd /home/tears
-
 if [ -n "$REF_WAV" ]; then
-    python tts_server.py --port "$PORT" --device "$DEVICE" --reference-wav "$REF_WAV"
+    python "$SERVER_SCRIPT" --port "$PORT" --device "$DEVICE" --reference-wav "$REF_WAV"
 else
-    python tts_server.py --port "$PORT" --device "$DEVICE" --reference-wav ""
+    python "$SERVER_SCRIPT" --port "$PORT" --device "$DEVICE" --reference-wav ""
 fi

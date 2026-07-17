@@ -188,7 +188,7 @@ def render_live2d(
     audio_dir: Path,
     output_dir: Path,
     remotion_dir: Path = REMOTION_DIR,
-    timeout: int = 3600,
+    timeout: int = 36000,
 ) -> Path | None:
     """
     渲染单个脚本的 Live2D 透明视频
@@ -266,14 +266,14 @@ def render_live2d(
             return None
 
     except subprocess.TimeoutExpired:
-        logger.error(f"[live2d] ⏰ 超时 ({timeout}s): {script_id}")
+        logger.error(f"[live2d] ⏰ 超时 ({dynamic_timeout}s): {script_id}")
         return None
     except Exception as e:
         logger.error(f"[live2d] 💥 异常: {e}")
         return None
 
 
-def step_live2d(date_str: str, max_workers: int = 2):
+def step_live2d(date_str: str, max_workers: int = 2, progress_callback=None):
     """
     批量渲染所有脚本的 Live2D 轨
     """
@@ -294,6 +294,8 @@ def step_live2d(date_str: str, max_workers: int = 2):
             scripts.append(script)
 
     logger.info(f"[live2d] 批渲染: {len(scripts)} 脚本")
+    if progress_callback:
+        progress_callback(f"准备渲染 {len(scripts)} 个 Live2D 脚本", 0.0)
 
     success = 0
     skip = 0
@@ -323,6 +325,8 @@ def step_live2d(date_str: str, max_workers: int = 2):
                 if abs(actual_s - expected_s) <= 2.0:
                     skip += 1
                     logger.info(f"[live2d] ⏭️ 已存在: {script_id} ({actual_s:.1f}s)")
+                    if progress_callback:
+                        progress_callback(f"Live2D 缓存: {script_id}", 0.1)
                     continue
                 else:
                     logger.info(f"[live2d] 🔄 时长不匹配 ({actual_s:.1f}s vs {expected_s:.1f}s), 重渲: {script_id}")
@@ -333,6 +337,7 @@ def step_live2d(date_str: str, max_workers: int = 2):
             )
             futures[future] = script_id
 
+        completed = 0
         for future in as_completed(futures):
             script_id = futures[future]
             try:
@@ -344,7 +349,15 @@ def step_live2d(date_str: str, max_workers: int = 2):
             except Exception as e:
                 logger.error(f"[live2d] 💥 {script_id}: {e}")
                 fail += 1
+            completed += 1
+            if progress_callback:
+                progress_callback(
+                    f"Live2D [{completed}/{len(futures)}]: {script_id}",
+                    0.1 + 0.85 * completed / max(len(futures), 1),
+                )
 
     logger.info(
         f"[live2d] 完成: {success} 成功, {skip} 跳过, {fail} 失败"
     )
+    if progress_callback:
+        progress_callback(f"Live2D 完成: {success} 成功, {skip} 跳过", 1.0)

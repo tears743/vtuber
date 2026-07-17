@@ -67,7 +67,15 @@ class TranscribeNode(BaseNode):
 
         on_progress("转录中...", 0.1)
         import asyncio
-        manifest = await asyncio.to_thread(transcriber.transcribe_all, media_dir, manifest_path)
+        def report_transcription(message, progress):
+            on_progress(message, 0.1 + 0.8 * progress)
+
+        manifest = await asyncio.to_thread(
+            transcriber.transcribe_all,
+            media_dir,
+            manifest_path,
+            report_transcription,
+        )
         on_progress("转录完成", 0.9)
 
         ctx.media.manifest = manifest

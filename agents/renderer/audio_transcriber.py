@@ -118,7 +118,7 @@ class AudioTranscriber:
         self.language = language
         self.hf_token = hf_token
     
-    def transcribe_all(self, media_dir: Path, manifest_path: Path) -> dict:
+    def transcribe_all(self, media_dir: Path, manifest_path: Path, progress_callback=None) -> dict:
         """
         遍历 manifest 中有视频的条目，转录音频
         结果写入 manifest.json 的 video.transcript / video.segments 字段
@@ -159,13 +159,25 @@ class AudioTranscriber:
             return manifest
         
         logger.info(f"[transcriber] {len(tasks)} 个视频待转录")
+        if progress_callback:
+            progress_callback(f"准备转录 {len(tasks)} 个视频", 0.0)
         
-        for source_file, video_path in tasks:
+        for task_index, (source_file, video_path) in enumerate(tasks, start=1):
             logger.info(f"[transcriber] 转录中: {video_path.name}")
+            if progress_callback:
+                progress_callback(
+                    f"转录 [{task_index}/{len(tasks)}]: {video_path.name}",
+                    (task_index - 1) / max(len(tasks), 1),
+                )
             result = self._transcribe_via_wsl(video_path)
             
             if not result:
                 logger.warning(f"[transcriber] 转录失败: {video_path.name}")
+                if progress_callback:
+                    progress_callback(
+                        f"转录失败 [{task_index}/{len(tasks)}]: {video_path.name}",
+                        task_index / max(len(tasks), 1),
+                    )
                 continue
             
             # 写回 manifest
@@ -185,12 +197,19 @@ class AudioTranscriber:
                 f"耗时 {result.get('elapsed_s', '?')}s, "
                 f"前50字: {result['text'][:50]}"
             )
+            if progress_callback:
+                progress_callback(
+                    f"转录完成 [{task_index}/{len(tasks)}]: {video_path.name}",
+                    task_index / max(len(tasks), 1),
+                )
         
         # 保存
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         
         logger.info(f"[transcriber] 完成: 转录 {len(tasks)} 个视频")
+        if progress_callback:
+            progress_callback(f"转录完成: {len(tasks)} 个视频", 1.0)
         return manifest
     
     def _transcribe_via_wsl(self, video_path: Path) -> dict | None:

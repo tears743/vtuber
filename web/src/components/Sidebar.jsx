@@ -16,6 +16,15 @@ export function Sidebar() {
         <NavLink to="/timeline" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           🎬 时间轴
         </NavLink>
+        <NavLink to="/custom-nodes" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          🔧 自定义节点
+        </NavLink>
+        <NavLink to="/custom-tools" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          🛠️ 自定义工具
+        </NavLink>
+        <NavLink to="/custom-workflows" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          📦 自定义工作流
+        </NavLink>
         <NavLink to="/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           ⚙️ 设置
         </NavLink>

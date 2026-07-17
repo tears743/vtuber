@@ -24,6 +24,14 @@ MIN_WIDTH = 200       # 最小宽度 px
 MIN_HEIGHT = 200      # 最小高度 px
 MIN_FILE_SIZE = 10240 # 最小文件大小 10KB
 MAX_CONCURRENCY = 10  # 最大并发数
+SUPPORTED_IMAGE_SUFFIX_MIME_TYPES = {
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 
 RECOGNITION_PROMPT = """你是一个专业的视觉素材分析师。请对这张图片进行详细描述，供短视频脚本编剧参考。
 
@@ -42,10 +50,15 @@ class MediaRecognizer:
     """用 Vision 模型识别素材内容"""
     
     def __init__(self, base_url: str, api_key: str, model: str):
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=60.0,
+            max_retries=0,
+        )
         self.model = model
     
-    def recognize_all(self, media_dir: Path, manifest_path: Path) -> dict:
+    def recognize_all(self, media_dir: Path, manifest_path: Path, progress_callback=None) -> dict:
         """
         识别 media/ 中的所有素材，更新 manifest.json
         并发识别，最大 10 张同时进行
@@ -93,10 +106,28 @@ class MediaRecognizer:
                     continue
                 
                 tasks.append((source_file, img_path_str, img_path, quality))
+
+            # README images use the same concurrent recognition queue. The old
+            # serial loop could make one repository block the node for minutes.
+            readme_data = item.get("readme")
+            if isinstance(readme_data, dict) and not readme_data.get("recognized_images"):
+                for img_path_str in readme_data.get("images", []):
+                    img_path = Path(img_path_str)
+                    if not img_path.exists():
+                        continue
+                    quality = self._check_image_quality(img_path)
+                    if not quality["usable"]:
+                        logger.debug(
+                            f"[recognizer] 跳过低质量 README 图: {img_path.name} ({quality['reason']})"
+                        )
+                        continue
+                    tasks.append((source_file, img_path_str, img_path, quality))
         
         if skipped > 0:
             logger.info(f"[recognizer] 跳过 {skipped} 张已识别的图片（缓存命中）")
         logger.info(f"[recognizer] 共 {len(tasks)} 张图片待识别 (并发: {MAX_CONCURRENCY})")
+        if progress_callback:
+            progress_callback(f"准备识别 {len(tasks)} 张图片", 0.03)
         
         # ── Phase 2: 并发识别 ──
         results = {}  # {(source_file, img_path_str): {path, width, height, size_kb, description}}
@@ -123,6 +154,7 @@ class MediaRecognizer:
                     "width": quality["width"],
                     "height": quality["height"],
                     "size_kb": quality["size_kb"],
+                    "format": quality.get("format", ""),
                     "description": description,
                 }
                 logger.info(
@@ -130,9 +162,20 @@ class MediaRecognizer:
                     f"{img_path.name} ({quality['width']}x{quality['height']}): "
                     f"{description[:50]}"
                 )
+                if progress_callback:
+                    progress_callback(
+                        f"图片识别 [{done_count}/{len(tasks)}]: {img_path.name}",
+                        0.05 + 0.6 * done_count / max(len(tasks), 1),
+                    )
         
         # ── Phase 3: 写回 manifest ──
-        for source_file, item in manifest.items():
+        manifest_items = list(manifest.items())
+        for item_index, (source_file, item) in enumerate(manifest_items, start=1):
+            if progress_callback:
+                progress_callback(
+                    f"增强素材 [{item_index}/{len(manifest_items)}]: {source_file}",
+                    0.65 + 0.33 * (item_index - 1) / max(len(manifest_items), 1),
+                )
             recognized_images = []
             images = item.get("images", [])
             
@@ -199,25 +242,14 @@ class MediaRecognizer:
             # README 识别：图片识别 + 内容总结
             readme_data = item.get("readme")
             if readme_data and isinstance(readme_data, dict):
-                # 识别 README 中的图片（已有 recognized_images 则跳过）
+                # 写回并发识别完成的 README 图片。
                 if not readme_data.get("recognized_images"):
                     readme_images = readme_data.get("images", [])
                     recognized_readme_imgs = []
                     for img_path_str in readme_images:
-                        img_path = Path(img_path_str)
-                        if img_path.exists():
-                            quality = self._check_image_quality(img_path)
-                            if quality["usable"]:
-                                try:
-                                    desc = self._recognize_image(img_path)
-                                    recognized_readme_imgs.append({
-                                        "path": img_path_str,
-                                        "width": quality["width"],
-                                        "height": quality["height"],
-                                        "description": desc,
-                                    })
-                                except Exception:
-                                    pass
+                        result = results.get((source_file, img_path_str))
+                        if result:
+                            recognized_readme_imgs.append(result)
                     
                     if recognized_readme_imgs:
                         readme_data["recognized_images"] = recognized_readme_imgs
@@ -232,25 +264,33 @@ class MediaRecognizer:
                             readme_data["summary"] = summary
                     except Exception as e:
                         logger.debug(f"[recognizer] README 总结失败: {e}")
+            if progress_callback:
+                progress_callback(
+                    f"素材增强 [{item_index}/{len(manifest_items)}]: {source_file}",
+                    0.65 + 0.33 * item_index / max(len(manifest_items), 1),
+                )
         
         # 保存
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
         
         logger.info(f"[recognizer] 完成: 识别 {len(results)} 张图片")
+        if progress_callback:
+            progress_callback(f"识别完成: {len(results)} 张图片", 1.0)
         return manifest
     
     def _recognize_image(self, img_path: Path, max_retries: int = 2) -> str:
         """用 vision 模型识别单张图片，空结果自动重试"""
+        image_info = self._read_image_info(img_path)
+        if not image_info["usable"]:
+            logger.info(f"[recognizer] 跳过无法识别的图片: {img_path.name} ({image_info['reason']})")
+            return f"识别跳过: {image_info['reason']}"
+
         # 读取图片转 base64
         with open(img_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode("utf-8")
         
-        # 确定 MIME type
-        suffix = img_path.suffix.lower()
-        mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", 
-                   ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}
-        mime_type = mime_map.get(suffix, "image/jpeg")
+        mime_type = image_info["mime_type"]
         
         for attempt in range(max_retries + 1):
             try:
@@ -277,6 +317,9 @@ class MediaRecognizer:
                     logger.debug(f"[recognizer] {img_path.name}: 空结果，重试 {attempt+1}/{max_retries}")
                     
             except Exception as e:
+                if self._is_unsupported_image_error(e):
+                    logger.info(f"[recognizer] 跳过无法识别的图片: {img_path.name} ({e})")
+                    return "识别跳过: 图片格式不被 Vision 接口支持"
                 if attempt < max_retries:
                     logger.debug(f"[recognizer] {img_path.name}: 失败 {e}，重试 {attempt+1}/{max_retries}")
                 else:
@@ -301,20 +344,62 @@ class MediaRecognizer:
                 return {"usable": False, "width": 0, "height": 0, 
                         "size_kb": size_kb, "reason": f"文件太小 ({size_kb}KB < 10KB)"}
             
-            # 尺寸检查
-            with Image.open(img_path) as img:
-                width, height = img.size
+            image_info = self._read_image_info(img_path)
+            if not image_info["usable"]:
+                return {"usable": False, "width": image_info["width"], "height": image_info["height"],
+                        "size_kb": size_kb, "format": image_info.get("format", ""), "reason": image_info["reason"]}
+
+            width = image_info["width"]
+            height = image_info["height"]
             
             if width < MIN_WIDTH or height < MIN_HEIGHT:
                 return {"usable": False, "width": width, "height": height,
-                        "size_kb": size_kb, "reason": f"分辨率太低 ({width}x{height})"}
+                        "size_kb": size_kb, "format": image_info.get("format", ""), "reason": f"分辨率太低 ({width}x{height})"}
             
             return {"usable": True, "width": width, "height": height, 
-                    "size_kb": size_kb, "reason": ""}
+                    "size_kb": size_kb, "format": image_info.get("format", ""), "reason": ""}
             
         except Exception as e:
             return {"usable": False, "width": 0, "height": 0, 
-                    "size_kb": 0, "reason": f"无法读取: {e}"}
+                    "size_kb": 0, "format": "", "reason": f"无法读取: {e}"}
+
+    def _read_image_info(self, img_path: Path) -> dict:
+        suffix = img_path.suffix.lower()
+        mime_type = SUPPORTED_IMAGE_SUFFIX_MIME_TYPES.get(suffix)
+        if not mime_type:
+            return {
+                "usable": False,
+                "width": 0,
+                "height": 0,
+                "format": suffix.lstrip(".").upper() or "unknown",
+                "mime_type": "",
+                "reason": f"不支持的图片后缀: {suffix or 'unknown'}",
+            }
+
+        try:
+            with Image.open(img_path) as img:
+                width, height = img.size
+            return {
+                "usable": True,
+                "width": width,
+                "height": height,
+                "format": suffix.lstrip(".").upper(),
+                "mime_type": mime_type,
+                "reason": "",
+            }
+        except Exception as e:
+            return {
+                "usable": False,
+                "width": 0,
+                "height": 0,
+                "format": "",
+                "mime_type": "",
+                "reason": f"无法读取图片: {e}",
+            }
+
+    def _is_unsupported_image_error(self, error: Exception) -> bool:
+        text = str(error).lower()
+        return "invalid image format" in text or "only bmp/gif/png/jpeg/webp" in text
     
     def _get_video_duration(self, video_path: Path) -> float | None:
         """获取视频时长（秒）"""

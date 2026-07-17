@@ -12,15 +12,17 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Literal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 SETTINGS_DIR = Path(__file__).parent.parent.parent / "settings"
 SETTINGS_FILE = SETTINGS_DIR / "global.json"
+
+Capability = Literal["coding", "multimodal", "text"]
 
 
 class ModelCreate(BaseModel):
@@ -30,7 +32,7 @@ class ModelCreate(BaseModel):
     model: str
     context_length: int = 128000
     max_output_tokens: int = 8192
-    capabilities: list = ["text"]
+    capabilities: list[Capability] = []
     note: str = ""
 
 
@@ -40,7 +42,7 @@ class ModelUpdate(BaseModel):
     model: Optional[str] = None
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
-    capabilities: Optional[list] = None
+    capabilities: Optional[list[Capability]] = None
     note: Optional[str] = None
 
 
@@ -76,7 +78,7 @@ def _import_from_config() -> dict:
                 "model": cfg.get("model", ""),
                 "context_length": cfg.get("context_length", 128000),
                 "max_output_tokens": cfg.get("max_output_tokens", 8192),
-                "capabilities": ["text"],
+                "capabilities": cfg.get("capabilities", []),
                 "note": cfg.get("note", ""),
             }
         _save_settings(settings)
@@ -96,13 +98,22 @@ def _mask_key(key: str) -> str:
 
 
 @router.get("/models")
-async def list_models():
-    """获取所有模型（API key 脱敏）"""
+async def list_models(capability: Optional[str] = Query(None, description="按能力过滤模型，例如 coding/multimodal/text")):
+    """获取所有模型（API key 脱敏）
+
+    可选查询参数 ?capability=coding，返回 capabilities 中包含该值的模型。
+    """
     settings = _load_settings()
     models = settings.get("models", {})
     result = []
     for name, cfg in models.items():
-        masked = {**cfg, "api_key": _mask_key(cfg.get("api_key", ""))}
+        # 向后兼容：现有模型没有 capabilities 时视为空列表
+        caps = cfg.get("capabilities", [])
+        if not isinstance(caps, list):
+            caps = []
+        if capability and capability not in caps:
+            continue
+        masked = {**cfg, "api_key": _mask_key(cfg.get("api_key", "")), "capabilities": caps}
         result.append(masked)
     return result
 
@@ -115,7 +126,10 @@ async def get_model(model_id: str):
     if model_id not in models:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
     cfg = models[model_id]
-    return {**cfg, "api_key": _mask_key(cfg.get("api_key", ""))}
+    caps = cfg.get("capabilities", [])
+    if not isinstance(caps, list):
+        caps = []
+    return {**cfg, "api_key": _mask_key(cfg.get("api_key", "")), "capabilities": caps}
 
 
 @router.post("/models")

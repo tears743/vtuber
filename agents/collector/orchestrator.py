@@ -9,6 +9,8 @@ Orchestrator (DeepSeek V4-flash) handles:
 """
 import json
 import logging
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,6 +45,9 @@ class CollectorOrchestrator:
         data_dir: Path,
         max_workers: int = 4,
         enabled_platforms: list[str] | None = None,
+        collection_mode: str = "ai_tech",
+        planning_prompt: str = "",
+        progress_callback=None,
     ):
         self.client = OpenAI(base_url=orchestrator_base_url, api_key=orchestrator_api_key)
         self.model = orchestrator_model
@@ -52,12 +57,52 @@ class CollectorOrchestrator:
         self.worker_model = worker_model
         
         self.opencli_binary = opencli_binary
+        self.collection_mode = self._normalize_mode(collection_mode)
         self.data_dir = data_dir
         self.max_workers = max_workers
-        self.enabled_platforms = tuple(enabled_platforms or ["weibo", "douyin", "github", "huggingface"])
+        self.enabled_platforms = tuple(
+            self._effective_platforms(enabled_platforms or ["weibo", "douyin", "github", "huggingface"])
+        )
+        self.planning_prompt = planning_prompt or ""
+        self.progress_callback = progress_callback
         
         # Ensure output dir exists
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _report_progress(self, message: str, progress: float) -> None:
+        if self.progress_callback:
+            self.progress_callback(message, min(1.0, max(0.0, float(progress))))
+
+    def _normalize_mode(self, mode: str) -> str:
+        mode = str(mode or "ai_tech").strip().lower()
+        aliases = {
+            "ai": "ai_tech",
+            "tech": "ai_tech",
+            "ai科技": "ai_tech",
+            "ai 科技": "ai_tech",
+            "hot": "daily_hot",
+            "daily": "daily_hot",
+            "今日热搜": "daily_hot",
+            "热搜": "daily_hot",
+            "all": "mixed",
+            "混合": "mixed",
+        }
+        mode = aliases.get(mode, mode)
+        return mode if mode in {"ai_tech", "daily_hot", "mixed"} else "ai_tech"
+
+    def _effective_platforms(self, platforms: list[str]) -> list[str]:
+        mode_defaults = {
+            "ai_tech": ["github", "huggingface"],
+            "daily_hot": ["weibo", "douyin"],
+            "mixed": ["weibo", "douyin", "github", "huggingface"],
+        }[self.collection_mode]
+        selected = []
+        for platform in platforms:
+            name = str(platform).strip().lower()
+            if name in {"weibo", "douyin", "github", "huggingface"} and name not in selected:
+                selected.append(name)
+        effective = [platform for platform in selected if platform in mode_defaults]
+        return effective or mode_defaults
 
     def _empty_plan(self) -> dict:
         return {platform: [] for platform in self.enabled_platforms}
@@ -79,19 +124,27 @@ class CollectorOrchestrator:
         """
         logger.info("=" * 60)
         logger.info("[orchestrator] Starting Agent Teams collection")
+        logger.info(f"[orchestrator] Mode: {self.collection_mode}; platforms: {list(self.enabled_platforms)}")
         logger.info("=" * 60)
         
         # Phase 1: Fetch raw hot lists
+        self._report_progress("获取各平台榜单...", 0.05)
         raw_data = self._fetch_hot_lists()
+        self._save_github_trending_snapshot(raw_data.get("github") or [])
         
         # Phase 2: Use Orchestrator LLM to plan tasks
+        self._report_progress("LLM 规划采集任务...", 0.3)
         task_plan = self._plan_tasks(raw_data)
         
         # Phase 2.5: Dedup - remove already collected topics
+        self._report_progress("去重并准备采集任务...", 0.45)
         task_plan = self._dedup_tasks(task_plan)
         
         # Phase 3: Dispatch Workers concurrently
+        self._report_progress("并发执行平台采集...", 0.5)
         results = self._dispatch_workers(task_plan)
+        self._report_progress("校验采集完整性...", 0.9)
+        self._ensure_github_collected(raw_data.get("github") or [], results)
         
         # Phase 4: Summary
         total_files = sum(len(r["files_saved"]) for r in results.values())
@@ -99,6 +152,7 @@ class CollectorOrchestrator:
         total_errors = sum(len(r["errors"]) for r in results.values())
         
         logger.info("=" * 60)
+        self._report_progress(f"采集完成: {total_items} 条", 1.0)
         logger.info(f"[orchestrator] DONE")
         logger.info(f"  Workers: {len(results)}")
         logger.info(f"  Files: {total_files}")
@@ -114,6 +168,96 @@ class CollectorOrchestrator:
             "errors": total_errors,
             "per_worker": results,
         }
+
+    def _save_github_trending_snapshot(self, repositories: list[dict]) -> None:
+        if "github" not in self.enabled_platforms:
+            return
+        meta_dir = self.data_dir / ".meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        snapshot = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "repositories": [item for item in repositories if isinstance(item, dict)],
+        }
+        (meta_dir / "github_trending.json").write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _ensure_github_collected(self, repositories: list[dict], results: dict) -> None:
+        """Create deterministic records for Trending repos skipped by the LLM worker."""
+        if "github" not in self.enabled_platforms or not repositories:
+            return
+
+        collected_keys = set()
+        for path in self.data_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            key = self._github_repo_key(data.get("url") or "")
+            if key:
+                collected_keys.add(key)
+
+        github_result = results.setdefault(
+            "github",
+            {"files_saved": [], "total_items": 0, "errors": [], "topics_done": []},
+        )
+        added = 0
+        for repository in repositories:
+            if not isinstance(repository, dict):
+                continue
+            repo_url = str(repository.get("url") or repository.get("link") or "").strip()
+            repo_key = self._github_repo_key(repo_url)
+            if not repo_key or repo_key in collected_keys:
+                continue
+
+            title = str(repository.get("title") or repository.get("name") or repo_key)
+            filename_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", repo_key.replace("/", "_"))
+            path = self.data_dir / f"{datetime.now():%Y-%m-%d}_github_{filename_slug}.json"
+            data = {
+                "title": title,
+                "source": "github_trending",
+                "url": repo_url,
+                "content": f"GitHub Trending repository: {title}. Full README is downloaded in the media stage.",
+                "visual_assets": {"readme_url": repo_url},
+                "key_points": [],
+                "media_type": "tech_news",
+                "technical_details": {},
+                "meta": {"collection_fallback": True},
+            }
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            github_result["files_saved"].append(str(path))
+            github_result["total_items"] += 1
+            github_result["topics_done"].append({"title": title, "file": path.name})
+            collected_keys.add(repo_key)
+            added += 1
+
+        expected_keys = {
+            self._github_repo_key(item.get("url") or item.get("link") or "")
+            for item in repositories
+            if isinstance(item, dict)
+        }
+        expected_keys.discard("")
+        missing = sorted(expected_keys - collected_keys)
+        if missing:
+            raise RuntimeError("GitHub Trending 采集记录不完整: " + ", ".join(missing))
+        if added:
+            logger.warning("[orchestrator] GitHub worker 遗漏 %s 条，已补建下载记录", added)
+        logger.info("[orchestrator] GitHub collection complete: %s/%s", len(collected_keys & expected_keys), len(expected_keys))
+
+    @staticmethod
+    def _github_repo_key(repo_url: str) -> str:
+        marker = "github.com/"
+        text = str(repo_url or "").strip()
+        if marker not in text.lower():
+            return ""
+        tail = re.split(marker, text, maxsplit=1, flags=re.IGNORECASE)[-1]
+        parts = [part for part in tail.split("?")[0].strip("/").split("/") if part]
+        if len(parts) < 2:
+            return ""
+        return "/".join(parts[:2]).removesuffix(".git").lower()
     
     # --- Phase 1: Fetch hot lists ---
     
@@ -170,79 +314,88 @@ class CollectorOrchestrator:
         
         # GitHub Trending via browser (全量)
         if "github" in self.enabled_platforms:
+            results["github"] = []
+            for attempt in range(1, 4):
+                try:
+                    full_cmd = f"{self.opencli_binary} browser gh_orch open https://github.com/trending"
+                    subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
+                                  encoding="utf-8", errors="replace")
+                    time.sleep(2)
+
+                    full_cmd = f'{self.opencli_binary} browser gh_orch eval "Array.from(document.querySelectorAll(\'article h2 a\')).map(a => ({{title: a.textContent.trim(), url: \'https://github.com\' + a.getAttribute(\'href\')}}))"'
+                    proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
+                                         encoding="utf-8", errors="replace")
+                    if proc.returncode != 0:
+                        raise RuntimeError(f"browser eval exit={proc.returncode}: {proc.stderr[:200]}")
+                    try:
+                        data = json.loads(proc.stdout.strip())
+                        results["github"] = data if isinstance(data, list) else []
+                    except json.JSONDecodeError:
+                        raise RuntimeError("browser eval 返回的不是合法 JSON")
+                    if results["github"]:
+                        logger.info(f"[orchestrator] github: {len(results['github'])} repos")
+                        break
+                    raise RuntimeError("榜单页面没有解析到仓库")
+                except Exception as e:
+                    logger.warning("[orchestrator] GitHub Trending 抓取失败 (%s/3): %s", attempt, e)
+                    if attempt < 3:
+                        time.sleep(min(2 ** attempt, 5))
+            if not results["github"]:
+                raise RuntimeError("GitHub Trending 榜单连续 3 次抓取为空，已停止采集以避免产生残缺结果")
+
+        # LMSYS Chatbot Arena 排名（AI 科技 / 混合模式下保存，供后续节点使用）
+        if self.collection_mode in {"ai_tech", "mixed"}:
             try:
-                full_cmd = f"{self.opencli_binary} browser gh_orch open https://github.com/trending"
+                full_cmd = f"{self.opencli_binary} browser arena_orch open https://lmarena.ai/leaderboard"
                 subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
                               encoding="utf-8", errors="replace")
 
-                full_cmd = f'{self.opencli_binary} browser gh_orch eval "Array.from(document.querySelectorAll(\'article h2 a\')).map(a => ({{title: a.textContent.trim(), url: \'https://github.com\' + a.getAttribute(\'href\')}}))"'
+                time.sleep(3)  # 等页面加载
+
+                # 字段: col0=model, col1=rank_number, col2=score_or_category
+                full_cmd = f'{self.opencli_binary} browser arena_orch eval "Array.from(document.querySelectorAll(\'table tbody tr\')).slice(0,30).map(tr => {{const cells = tr.querySelectorAll(\'td\'); return {{rank: cells[1]?.textContent?.trim(), model: cells[0]?.textContent?.trim(), arena_score: cells[2]?.textContent?.trim()}}}})"'
                 proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
                                      encoding="utf-8", errors="replace")
                 if proc.returncode == 0:
                     try:
                         data = json.loads(proc.stdout.strip())
-                        results["github"] = data if isinstance(data, list) else []
-                        logger.info(f"[orchestrator] github: {len(results.get('github', []))} repos")
+                        if data and isinstance(data, list):
+                            today = datetime.now().strftime("%Y-%m-%d")
+                            filepath = self.data_dir / f"{today}_rankings_lmsys_arena.json"
+                            with open(filepath, "w", encoding="utf-8") as f:
+                                json.dump({"title": "LMSYS Chatbot Arena Rankings", "source": "lmsys_arena", "date": today, "rankings": data}, f, ensure_ascii=False, indent=2)
+                            logger.info(f"[orchestrator] lmsys_arena: {len(data)} models saved")
                     except json.JSONDecodeError:
-                        results["github"] = []
-                else:
-                    results["github"] = []
+                        pass
             except Exception as e:
-                results["github"] = []
-                logger.error(f"[orchestrator] github: {e}")
-        
-        # LMSYS Chatbot Arena 排名（只拉排名，不深挖）
-        try:
-            import time
-            full_cmd = f"{self.opencli_binary} browser arena_orch open https://lmarena.ai/leaderboard"
-            subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
-                          encoding="utf-8", errors="replace")
-            
-            time.sleep(3)  # 等页面加载
-            
-            # 字段: col0=model, col1=rank_number, col2=score_or_category
-            full_cmd = f'{self.opencli_binary} browser arena_orch eval "Array.from(document.querySelectorAll(\'table tbody tr\')).slice(0,30).map(tr => {{const cells = tr.querySelectorAll(\'td\'); return {{rank: cells[1]?.textContent?.trim(), model: cells[0]?.textContent?.trim(), arena_score: cells[2]?.textContent?.trim()}}}})"'
-            proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
-                                 encoding="utf-8", errors="replace")
-            if proc.returncode == 0:
-                try:
-                    data = json.loads(proc.stdout.strip())
-                    if data and isinstance(data, list):
-                        today = datetime.now().strftime("%Y-%m-%d")
-                        filepath = self.data_dir / f"{today}_rankings_lmsys_arena.json"
-                        with open(filepath, "w", encoding="utf-8") as f:
-                            json.dump({"title": "LMSYS Chatbot Arena Rankings", "source": "lmsys_arena", "date": today, "rankings": data}, f, ensure_ascii=False, indent=2)
-                        logger.info(f"[orchestrator] lmsys_arena: {len(data)} models saved")
-                except json.JSONDecodeError:
-                    pass
-        except Exception as e:
-            logger.error(f"[orchestrator] lmsys_arena: {e}")
-        
-        # OpenRouter 排名（用 extract 拿 markdown，直接保存）
-        try:
-            full_cmd = f"{self.opencli_binary} browser or_orch open https://openrouter.ai/rankings"
-            subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
-                          encoding="utf-8", errors="replace")
-            
-            time.sleep(3)
-            
-            full_cmd = f"{self.opencli_binary} browser or_orch extract"
-            proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
-                                 encoding="utf-8", errors="replace")
-            if proc.returncode == 0:
-                try:
-                    extract_data = json.loads(proc.stdout.strip())
-                    content = extract_data.get("content", "")
-                    if content:
-                        today = datetime.now().strftime("%Y-%m-%d")
-                        filepath = self.data_dir / f"{today}_rankings_openrouter.json"
-                        with open(filepath, "w", encoding="utf-8") as f:
-                            json.dump({"title": "OpenRouter Model Rankings", "source": "openrouter", "date": today, "content": content}, f, ensure_ascii=False, indent=2)
-                        logger.info(f"[orchestrator] openrouter: saved ({len(content)} chars)")
-                except json.JSONDecodeError:
-                    pass
-        except Exception as e:
-            logger.error(f"[orchestrator] openrouter: {e}")
+                logger.error(f"[orchestrator] lmsys_arena: {e}")
+
+        # OpenRouter 排名（AI 科技 / 混合模式下保存，供后续节点使用）
+        if self.collection_mode in {"ai_tech", "mixed"}:
+            try:
+                full_cmd = f"{self.opencli_binary} browser or_orch open https://openrouter.ai/rankings"
+                subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
+                              encoding="utf-8", errors="replace")
+
+                time.sleep(3)
+
+                full_cmd = f"{self.opencli_binary} browser or_orch extract"
+                proc = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=30,
+                                     encoding="utf-8", errors="replace")
+                if proc.returncode == 0:
+                    try:
+                        extract_data = json.loads(proc.stdout.strip())
+                        content = extract_data.get("content", "")
+                        if content:
+                            today = datetime.now().strftime("%Y-%m-%d")
+                            filepath = self.data_dir / f"{today}_rankings_openrouter.json"
+                            with open(filepath, "w", encoding="utf-8") as f:
+                                json.dump({"title": "OpenRouter Model Rankings", "source": "openrouter", "date": today, "content": content}, f, ensure_ascii=False, indent=2)
+                            logger.info(f"[orchestrator] openrouter: saved ({len(content)} chars)")
+                    except json.JSONDecodeError:
+                        pass
+            except Exception as e:
+                logger.error(f"[orchestrator] openrouter: {e}")
         
         # 清理 Orchestrator 打开的浏览器 session
         for session in ["gh_orch", "arena_orch", "or_orch"]:
@@ -257,7 +410,7 @@ class CollectorOrchestrator:
         logger.info("[orchestrator] browser sessions cleaned up")
         
         return results
-    
+
     # --- Phase 2: Task planning ---
     
     def _plan_tasks(self, raw_data: dict) -> dict:
@@ -282,65 +435,214 @@ class CollectorOrchestrator:
                     hot = item.get("hot_value") or item.get("hot", "") or item.get("upvotes", "")
                     url = item.get("url") or item.get("link", "")
                     data_summary.append(f"  {i+1}. {title} (hot={hot}) {url}")
-        
-        prompt = f"""Today is {today}. You are a content curator for a tech/news video channel.
 
-Below are today's hot topics from multiple platforms. Select ALL worthwhile topics for deep collection (aim for 40-60 total).
+        prompt = self._build_planning_prompt(today, "\n".join(data_summary))
+
+        base_messages = [
+            {"role": "system", "content": "You are a content curator. Respond ONLY in valid JSON."},
+            {"role": "user", "content": prompt},
+        ]
+        messages = list(base_messages)
+        last_error = None
+        max_attempts = 2  # Initial generation plus one repair based on the first error.
+        for attempt in range(1, max_attempts + 1):
+            content = ""
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    response_format={"type": "json_object"},
+                )
+                content = response.choices[0].message.content or "{}"
+                parsed = self._parse_planning_json(content)
+                if not isinstance(parsed, dict):
+                    raise ValueError("planning response must be a JSON object")
+
+                plan = self._filter_plan(parsed)
+                plan = self._ensure_platform_coverage(plan, raw_data)
+
+                for platform, topics in plan.items():
+                    if isinstance(topics, list):
+                        logger.info(f"[orchestrator] Plan: {platform} -> {len(topics)} topics")
+                return plan
+            except Exception as e:
+                last_error = e
+                if content:
+                    self._save_invalid_planning_response(content, attempt)
+                    excerpt = self._planning_error_excerpt(content, e)
+                    logger.warning(
+                        "[orchestrator] Planning response invalid (%s/%s): %s; near=%r",
+                        attempt,
+                        max_attempts,
+                        e,
+                        excerpt,
+                    )
+                    if attempt == 1:
+                        messages = [*base_messages,
+                            {"role": "assistant", "content": content},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "The previous assistant message is the exact invalid JSON that must be repaired.\n"
+                                    f"Parser error: {type(e).__name__}: {e}\n"
+                                    f"Content near the error: {excerpt!r}\n\n"
+                                    "Repair the JSON according to this exact parser error and return the complete "
+                                    "JSON object only. Preserve all valid data. Escape all line breaks, tabs, "
+                                    "backslashes, quotes, and other control characters inside string values."
+                                ),
+                            },
+                        ]
+                else:
+                    logger.warning(
+                        "[orchestrator] Planning call failed (%s/%s): %s",
+                        attempt,
+                        max_attempts,
+                        e,
+                    )
+
+        logger.error("[orchestrator] Planning failed after one repair: %s; using fallback", last_error)
+        return self._fallback_plan(raw_data)
+
+    @staticmethod
+    def _parse_planning_json(content: str) -> dict:
+        text = str(content or "").strip().lstrip("\ufeff")
+        fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end >= start:
+            text = text[start:end + 1]
+        # strict=False accepts raw newlines/tabs accidentally emitted inside JSON strings.
+        return json.loads(text, strict=False)
+
+    def _save_invalid_planning_response(self, content: str, attempt: int) -> None:
+        try:
+            meta_dir = self.data_dir / ".meta"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            path = meta_dir / f"planning_invalid_{datetime.now():%Y%m%d_%H%M%S}_{attempt}.txt"
+            path.write_text(str(content or ""), encoding="utf-8")
+        except OSError as e:
+            logger.debug("[orchestrator] Failed to save invalid planning response: %s", e)
+
+    @staticmethod
+    def _planning_error_excerpt(content: str, error: Exception) -> str:
+        position = getattr(error, "pos", 0) or 0
+        start = max(0, position - 100)
+        end = min(len(content), position + 100)
+        return content[start:end].replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+
+    def _build_planning_prompt(self, today: str, data_summary: str) -> str:
+        if self.planning_prompt.strip():
+            return (
+                self.planning_prompt
+                .replace("{{date}}", today)
+                .replace("{{data_summary}}", data_summary)
+                .replace("{{collection_mode}}", self.collection_mode)
+            )
+
+        mode_intro = {
+            "ai_tech": (
+                "Collection mode: AI 科技.\n"
+                "Goal: collect AI/technology material for a tech commentary video. "
+                "Prioritize GitHub repos, HuggingFace papers/models, model rankings, AI tools, chips, robotics, developer tools, benchmarks, and technical demos. "
+                "Do not select general social hot topics unless they directly relate to AI or technology."
+            ),
+            "daily_hot": (
+                "Collection mode: 今日热搜.\n"
+                "Goal: collect broad daily hot-search material for a news/hot-topic video. "
+                "Prioritize viral social topics from Weibo/Douyin, public events, unusual stories, and strong video material. "
+                "Skip low-value ads and pure celebrity gossip."
+            ),
+            "mixed": (
+                "Collection mode: 混合.\n"
+                "Goal: collect both AI/technology topics and broad daily hot-search topics. "
+                "Balance GitHub/HuggingFace technical material with Weibo/Douyin viral material."
+            ),
+        }[self.collection_mode]
+
+        platform_rules = {
+            "ai_tech": (
+                "- HuggingFace: papers and models (pass arxiv_id or model_id in url)\n"
+                "- GitHub: include EVERY available trending repo; the output count must equal the GitHub input count\n"
+                "- Target 15-30 high-value AI/tech topics total\n"
+                "- It is okay for weibo/douyin to be empty in this mode"
+            ),
+            "daily_hot": (
+                "- Weibo topics: things that need browser extraction (posts, comments, images)\n"
+                "- Douyin topics: things worth finding video content for. SELECT AS MANY DOUYIN TOPICS AS POSSIBLE\n"
+                "- Target 20-40 social hot topics total\n"
+                "- It is okay for github/huggingface to be empty in this mode"
+            ),
+            "mixed": (
+                "- Weibo topics: things that need browser extraction (posts, comments, images)\n"
+                "- Douyin topics: things worth finding video content for. SELECT AS MANY DOUYIN TOPICS AS POSSIBLE\n"
+                "- HuggingFace: papers and models (pass arxiv_id or model_id in url)\n"
+                "- GitHub: include EVERY available trending repo; the output count must equal the GitHub input count\n"
+                "- Target 40-60 topics total"
+            ),
+        }[self.collection_mode]
+
+        return f"""Today is {today}. You are a content curator for a video channel.
+
+{mode_intro}
+
+Below are available topics from the enabled platforms. Select worthwhile topics for deep collection.
 
 Criteria:
-- AI/tech news: high priority (papers, models, tools)
-- Social hot topics: select interesting/viral ones, skip celebrity gossip
-- Funny/unusual stories: good for engagement
-- Skip: ads, duplicates, low-value topics
+- Select topics that have enough substance for downstream script generation.
+- Prefer material with images, video, README, paper abstract, demo, concrete facts, or public discussion.
+- Skip ads, duplicates, and low-value topics.
+- Deduplicate by meaning, not just title.
 
 For each selected topic, assign it to the appropriate worker platform.
 
-{chr(10).join(data_summary)}
+{data_summary}
 
-Respond in JSON format:
+Respond ONLY in JSON format:
 {{
   "weibo": [
     {{"title": "...", "url": "...", "hot_value": 123, "reason": "..."}}
   ],
-  "douyin": [...],
-  "huggingface": [...],
-  "github": [...]
+  "douyin": [],
+  "huggingface": [],
+  "github": []
 }}
 
 Rules:
-- Weibo topics: things that need browser extraction (posts, comments, images)
-- Douyin topics: things worth finding video content for. SELECT AS MANY DOUYIN TOPICS AS POSSIBLE (prioritize quantity for douyin)
-- HuggingFace: papers and models (pass arxiv_id or model_id in url)
-- GitHub: repos worth describing (include ALL trending repos)
-- Each platform should get 10-20 topics (more is better)
-- Total 40-60 topics
-- We are making a hot-topic video compilation per platform, so include more rather than less
-- IMPORTANT: Do NOT select topics that are identical or very similar to each other. Deduplicate by meaning, not just title. If two topics cover the same event/story from different angles, keep only the most interesting one."""
-        
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a content curator. Respond ONLY in valid JSON."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                response_format={"type": "json_object"},
-            )
-            
-            plan = self._filter_plan(json.loads(response.choices[0].message.content))
-            
-            # Log plan
-            for platform, topics in plan.items():
-                if isinstance(topics, list):
-                    logger.info(f"[orchestrator] Plan: {platform} -> {len(topics)} topics")
-            
-            return plan
-            
-        except Exception as e:
-            logger.error(f"[orchestrator] Planning failed: {e}")
-            # Fallback: simple assignment based on source
-            return self._fallback_plan(raw_data)
+{platform_rules}
+- Only include keys for known platforms: weibo, douyin, huggingface, github.
+- If a platform has no suitable topics, return an empty array for it."""
+
+    def _ensure_platform_coverage(self, plan: dict, raw_data: dict) -> dict:
+        """Apply deterministic coverage rules after the LLM has ranked the topics."""
+        if "github" in self.enabled_platforms:
+            trending = [item for item in (raw_data.get("github") or []) if isinstance(item, dict)]
+            before = len(plan.get("github") or [])
+            plan["github"] = self._merge_unique_topics(plan.get("github") or [], trending)
+            if len(plan["github"]) > before:
+                logger.info(
+                    "[orchestrator] GitHub coverage: planner selected %s/%s; backfilled to %s",
+                    before,
+                    len(trending),
+                    len(plan["github"]),
+                )
+        return plan
+
+    def _merge_unique_topics(self, preferred: list, candidates: list) -> list:
+        merged = []
+        seen = set()
+        for item in [*preferred, *candidates]:
+            if not isinstance(item, dict):
+                continue
+            identity = str(item.get("url") or item.get("link") or item.get("title") or item.get("name") or "")
+            identity = identity.strip().lower().rstrip("/")
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(item)
+        return merged
     
     def _fallback_plan(self, raw_data: dict) -> dict:
         """Simple fallback if LLM planning fails."""
@@ -362,7 +664,7 @@ Rules:
                 plan["huggingface"].append(item)
         
         # GitHub
-        for item in (raw_data.get("github") or [])[:5]:
+        for item in raw_data.get("github") or []:
             if "github" in plan and isinstance(item, dict):
                 plan["github"].append(item)
         
@@ -507,6 +809,7 @@ Rules:
                 futures[future] = platform
             
             # Collect results as they complete
+            completed_workers = 0
             for future in as_completed(futures):
                 platform = futures[future]
                 try:
@@ -524,5 +827,11 @@ Rules:
                         "errors": [str(e)],
                         "topics_done": [],
                     }
+                finally:
+                    completed_workers += 1
+                    self._report_progress(
+                        f"平台采集 [{completed_workers}/{len(futures)}]: {platform}",
+                        0.5 + 0.35 * completed_workers / max(len(futures), 1),
+                    )
         
         return results

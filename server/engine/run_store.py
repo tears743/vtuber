@@ -135,6 +135,36 @@ def get_run_history(workflow_id: str, limit: int = 50) -> list[dict]:
         conn.close()
 
 
+def reconcile_running_runs(workflow_id: str = None, active_run_id: str = None, status: str = "stopped") -> int:
+    """Mark persisted running runs as stale when no in-memory task owns them."""
+    now = time.time()
+    with _lock:
+        conn = _get_conn()
+        try:
+            clauses = ["status = 'running'"]
+            params = []
+            if workflow_id:
+                clauses.append("workflow_id = ?")
+                params.append(workflow_id)
+            if active_run_id:
+                clauses.append("run_id != ?")
+                params.append(active_run_id)
+            where = " AND ".join(clauses)
+            cur = conn.execute(
+                f"""
+                UPDATE runs
+                SET status = ?,
+                    end_time = CASE WHEN end_time IS NULL OR end_time = 0 THEN ? ELSE end_time END
+                WHERE {where}
+                """,
+                [status, now, *params],
+            )
+            conn.commit()
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+
+
 def get_run_detail(run_id: str) -> Optional[dict]:
     """获取某次运行的详细状态 + 日志"""
     conn = _get_conn()

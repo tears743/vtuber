@@ -7,6 +7,7 @@ Platform Worker - 单平台深度采集 Agent
 import json
 import subprocess
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -62,6 +63,10 @@ Your task: Deep-collect the following Douyin topics. For each topic, find releva
 Usage: opencli douyin [command]
 
 Commands:
+  search <query>        关键词搜索抖音视频
+    options: --limit [value], -f json
+    output columns: rank, desc, author, url, plays, likes, comments, shares
+
   hashtag <action>       话题搜索 / AI推荐 / 热点词
     actions: search, suggest, hot
     options: --keyword [value], --limit [value], -f json
@@ -78,13 +83,21 @@ Commands:
 - `browser <session> open <url>` - open a URL
 - `browser <session> extract` - extract page content
 - `browser <session> eval "<js>"` - execute JavaScript
+- Never write `browser dy1.open`; the correct syntax is `browser dy1 open`.
 
 ## Strategy:
-1. Use `douyin hashtag search --keyword "<topic keyword>" --limit 5 -f json` to find related hashtags
-2. Use `browser <session> open https://www.douyin.com/search/<keyword>` if hashtag search fails
-3. Extract video URLs from search results or page (format: https://www.douyin.com/video/XXXXX)
-4. Open the video page with browser to get details (title, **author name**, comments, description)
-5. Save each topic immediately with `save_data`
+1. First use `douyin search "<topic keyword>" --limit 10 -f json` to find actual video results.
+2. Pick the best result whose `url` is `https://www.douyin.com/video/NUMBER`.
+3. If `douyin search` fails, use `browser <session> open https://www.douyin.com/search/<encoded keyword>` and extract video URLs from the page.
+4. Use `douyin hashtag search --keyword "<topic keyword>" --limit 5 -f json` only as a fallback to understand topic wording; hashtag URLs are not downloadable video URLs.
+5. Open the selected video page with browser if you need more details (title, **author name**, comments, description).
+6. Save each topic immediately with `save_data`
+
+## Throughput rules:
+- Process every assigned topic. Do not spend the whole run on one topic.
+- Maximum 4 tool calls per topic. If details are incomplete but you have a valid `/video/NUMBER` URL from `douyin search`, save it immediately.
+- Prefer saving 8-12 decent downloadable video items over perfecting 2-3 items.
+- If a command fails twice for one topic, save a minimal item from the best search result or skip that topic and continue.
 
 Topics to collect:
 {topics}
@@ -390,6 +403,8 @@ class PlatformWorker:
         command = args.get("command", "")
         if not command:
             return {"success": False, "error": "empty command"}
+
+        command = re.sub(r"^browser\s+([^\s.]+)\.([a-zA-Z-]+)\b", r"browser \1 \2", command.strip())
         
         # Track browser sessions for cleanup
         parts = command.split()
@@ -438,6 +453,14 @@ class PlatformWorker:
         
         if data is None:
             return {"success": False, "error": "data is None"}
+
+        if isinstance(data, str):
+            stripped = data.strip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    data = json.loads(stripped)
+                except json.JSONDecodeError:
+                    return {"success": False, "error": "data string is not valid JSON"}
         
         today = datetime.now().strftime("%Y-%m-%d")
         filepath = self.data_dir / f"{today}_{self.platform}_{filename}.json"

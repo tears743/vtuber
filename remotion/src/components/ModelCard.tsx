@@ -26,8 +26,9 @@ export const ModelCard: React.FC<ModelCardProps> = ({
   const fadeOut = interpolate(frame, [75, 90], [1, 0], { extrapolateLeft: "clamp" });
 
   // 下载量动画
-  const dlNum = parseFloat(downloads.replace(/[^0-9.]/g, "")) || 0;
-  const dlUnit = downloads.replace(/[0-9.]/g, "") || "";
+  const downloadsText = String(downloads ?? "0");
+  const dlNum = parseFloat(downloadsText.replace(/[^0-9.]/g, "")) || 0;
+  const dlUnit = downloadsText.replace(/[0-9.]/g, "") || "";
   const counterProgress = interpolate(frame, [15, 45], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",

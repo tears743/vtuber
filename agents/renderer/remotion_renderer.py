@@ -22,6 +22,59 @@ def ms_to_frames(ms: int) -> int:
     return round(ms / 1000 * FPS)
 
 
+def normalize_remotion_item(item: dict, overlay: bool = False) -> dict:
+    """Normalize LLM-generated props before they reach strict React components."""
+    normalized = dict(item or {})
+    component = normalized.get("component") or normalized.get("type") or ""
+    if overlay and normalized.get("type") == "remotion" and normalized.get("component"):
+        normalized["type"] = normalized["component"]
+    props = dict(normalized.get("props") or {})
+
+    for key in (
+        "name", "stars", "forks", "language", "description", "downloads",
+        "task", "title", "value", "unit", "text", "sub_text", "source",
+        "code", "color", "accent_color",
+    ):
+        if key in props and props[key] is not None:
+            props[key] = str(props[key])
+
+    for key in ("points", "items"):
+        value = props.get(key)
+        if component in {"info_panel", "remotion"} and value is not None:
+            if not isinstance(value, list):
+                value = [value]
+            props[key] = [str(entry) for entry in value]
+
+    if component == "ranking_table":
+        rows = props.get("items") if isinstance(props.get("items"), list) else []
+        props["items"] = [
+            {
+                "rank": int(row.get("rank", index + 1) or index + 1),
+                "name": str(row.get("name", "")),
+                "value": str(row.get("value", "")),
+            }
+            for index, row in enumerate(rows)
+            if isinstance(row, dict)
+        ]
+
+    if component == "comment_scroll":
+        comments = props.get("comments") if isinstance(props.get("comments"), list) else []
+        props["comments"] = [
+            {
+                **comment,
+                "user": str(comment.get("user", "")),
+                "text": str(comment.get("text", "")),
+                "likes": int(comment.get("likes", 0) or 0),
+            }
+            if isinstance(comment, dict)
+            else {"user": "", "text": str(comment), "likes": 0}
+            for comment in comments
+        ]
+
+    normalized["props"] = props
+    return normalized
+
+
 def render_overlay(
     script: dict,
     output_path: Path,
@@ -41,59 +94,34 @@ def render_overlay(
         输出文件路径，或 None（渲染失败）
     """
     tracks = script.get("tracks", {})
-    overlay_items = list(tracks.get("overlay", []))
+    overlay_items = [normalize_remotion_item(item, overlay=True) for item in tracks.get("overlay", [])]
 
-    # 合并 visual 轨中 type=remotion 的条目（stats_card/code_scroll/info_panel 等）
-    # 通过时间碰撞检测避免重复：如果 overlay 轨已有同时间段的组件则跳过
+    # Remotion components are transparent presentation layers. Keeping them in
+    # Overlay preserves the studio and the full-size presenter underneath.
     visual_items = tracks.get("visual", [])
+    existing_items = {
+        (
+            item.get("start_ms", 0),
+            item.get("duration_ms", 0),
+            item.get("type", ""),
+            json.dumps(item.get("props") or {}, ensure_ascii=False, sort_keys=True, default=str),
+        )
+        for item in overlay_items
+    }
+    for item in visual_items:
+        if item.get("type") != "remotion":
+            continue
+        normalized = normalize_remotion_item(item, overlay=True)
+        identity = (
+            normalized.get("start_ms", 0),
+            normalized.get("duration_ms", 0),
+            normalized.get("type", ""),
+            json.dumps(normalized.get("props") or {}, ensure_ascii=False, sort_keys=True, default=str),
+        )
+        if identity not in existing_items:
+            overlay_items.append(normalized)
+            existing_items.add(identity)
 
-    # 构建 overlay 轨已有时间区间集合（含组件类型）
-    existing_intervals = []
-    for ov in overlay_items:
-        s = ov.get("start_ms", 0)
-        e = s + ov.get("duration_ms", 0)
-        ov_type = ov.get("type", "")
-        existing_intervals.append((s, e, ov_type))
-
-    def _has_same_component(start_ms: int, duration_ms: int, component: str) -> bool:
-        """检查是否与已有 overlay 中相同类型的组件时间重叠"""
-        end_ms = start_ms + duration_ms
-        for (es, ee, et) in existing_intervals:
-            if start_ms < ee and end_ms > es and et == component:
-                return True
-        return False
-
-    for vis in visual_items:
-        if vis.get("type") == "remotion" and vis.get("component"):
-            vis_start = vis.get("start_ms", 0)
-            vis_dur = vis.get("duration_ms", 5000)
-            vis_component = vis.get("component", "")
-            # 只有同类型组件时间重叠才跳过（避免重复渲染同一效果）
-            if _has_same_component(vis_start, vis_dur, vis_component):
-                logger.debug(
-                    f"[remotion] 跳过 visual 轨 {vis_component} "
-                    f"({vis_start}ms) — overlay 轨已有同类型组件"
-                )
-                continue
-            # 转换为 overlay 格式: component → type
-            # position 兼容: 优先从 props 内读取，fallback 到外层
-            vis_position = vis.get("props", {}).get("position") or vis.get("position")
-            overlay_item = {
-                "start_ms": vis_start,
-                "duration_ms": vis_dur,
-                "type": vis["component"],
-                "props": vis.get("props", {}),
-                "style": vis.get("style"),
-                "scale": vis.get("scale"),
-                "position": vis_position,
-                "offsetX": vis.get("offsetX"),
-                "offsetY": vis.get("offsetY"),
-            }
-            # 移除 None 值
-            overlay_item = {k: v for k, v in overlay_item.items() if v is not None}
-            overlay_items.append(overlay_item)
-            # 更新区间集合
-            existing_intervals.append((vis_start, vis_start + vis_dur, vis_component))
     # 自动注入 author_tag：扫描 visual 轨中有 author 字段的 video_clip/image 段
     # 为每段生成 author_tag overlay（Remotion 渲染中文无乱码）
     for vis in visual_items:

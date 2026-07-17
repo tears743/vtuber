@@ -1,23 +1,23 @@
-"""
+﻿"""
 VideoFactory Visual Workflow Server
 
-FastAPI 主入口，同时 serve：
+FastAPI 主入口，同时提供：
 1. REST API（工作流/节点/设置/运行）
 2. WebSocket（实时状态推送）
 3. 前端静态文件（Vite 构建产物）
 
-启动命令: python server.py
+启动命令: python run_server.py
 """
 import logging
 import sys
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# 确保项目根目录在 path 中
+# 确保项目根目录在 sys.path 中
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -29,10 +29,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("server")
 
-# ── 创建 FastAPI 应用 ──
+# 创建 FastAPI 应用
 app = FastAPI(
     title="VideoFactory Workflow Server",
-    description="可视化节点编排系统后端",
+    description="VideoFactory workflow backend",
     version="0.1.0",
 )
 
@@ -45,7 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── 注册所有节点（自动发现 + 社区节点包）──
+# 注册所有节点（自动发现 + 社区节点包）
 from server.nodes.loader import pack_loader
 
 # 1. 加载内置节点（server/nodes/builtin/ 下的 .py 文件）
@@ -59,9 +59,12 @@ import server.nodes.recognize  # noqa: F401
 import server.nodes.transcribe  # noqa: F401
 import server.nodes.director  # noqa: F401
 import server.nodes.tts  # noqa: F401
+import server.nodes.fish_tts  # noqa: F401
+import server.nodes.voice_visual_director  # noqa: F401
 import server.nodes.align  # noqa: F401
 import server.nodes.overlay  # noqa: F401
 import server.nodes.visual  # noqa: F401
+import server.nodes.subtitle  # noqa: F401
 import server.nodes.live2d  # noqa: F401
 import server.nodes.compose  # noqa: F401
 
@@ -71,29 +74,35 @@ pack_loader.load_all()
 from server.nodes.registry import list_types
 logger.info(f"已注册 {len(list_types())} 个节点类型: {list_types()}")
 
-# ── 注册 API 路由 ──
+# 注册 API 路由
 from server.api.workflows import router as workflows_router
+from server.api.workflows import templates_router as workflow_templates_router
 from server.api.nodes import router as nodes_router
 from server.api.settings import router as settings_router
 from server.api.runs import router as runs_router
 from server.api.scripts import router as scripts_router
 from server.api.node_packs import router as node_packs_router
+from server.api.custom_nodes import router as custom_nodes_router
+from server.api.tools import router as tools_router
 
 app.include_router(workflows_router)
+app.include_router(workflow_templates_router)
 app.include_router(nodes_router)
 app.include_router(settings_router)
 app.include_router(runs_router)
 app.include_router(scripts_router)
 app.include_router(node_packs_router)
+app.include_router(custom_nodes_router)
+app.include_router(tools_router)
 
 
-# ── 健康检查 ──
+# 健康检查
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "nodes_registered": len(list_types())}
 
 
-# ── 前端静态文件 (production build) ──
+# 前端静态文件（production build）
 FRONTEND_DIR = PROJECT_ROOT / "web" / "dist"
 if not FRONTEND_DIR.exists():
     FRONTEND_DIR = Path(r"d:\workspace\videoFactory\web\dist")
@@ -103,23 +112,25 @@ if FRONTEND_DIR.exists():
     # SPA fallback: 非 API/WS 路径返回 index.html
     @app.get("/{path:path}")
     async def spa_fallback(path: str):
+        if path.startswith("api/") or path.startswith("ws/"):
+            raise HTTPException(status_code=404, detail=f"API route not found: /{path}")
         # 如果请求的是真实存在的静态文件（js/css/图片等），直接返回
         file_path = FRONTEND_DIR / path
         if file_path.is_file():
             return FileResponse(file_path)
-        # 否则返回 index.html 让前端路由处理
+        # 否则返回 index.html 交给前端路由处理
         return FileResponse(FRONTEND_DIR / "index.html")
 
     # 静态资源目录（CSS/JS/fonts 等）
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
     logger.info(f"Serving frontend from: {FRONTEND_DIR}")
 else:
-    logger.info("前端未构建，跳过静态文件挂载 (开发模式用 Vite dev server)")
+    logger.info("前端未构建，跳过静态文件挂载（开发模式使用 Vite dev server）")
 
 
-# ── 生成默认工作流 ──
+# 生成默认工作流
 def _ensure_default_workflow():
-    """首次启动时生成默认工作流"""
+    """首次启动时生成默认工作流。"""
     workflows_dir = PROJECT_ROOT / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
     default_path = workflows_dir / "default.json"
@@ -180,17 +191,17 @@ async def startup():
 
 
 def _find_available_port(start: int = 8100, max_attempts: int = 10) -> int:
-    """检测端口是否被占用，被占用则自动递增找可用端口"""
+    """Find an available local port."""
     import socket
 
     for offset in range(max_attempts):
         port = start + offset
-        # 检测端口是否有人在监听
+        # 检测端口是否正在被监听
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.5)
             result = s.connect_ex(("127.0.0.1", port))
         if result != 0:
-            # 连接失败 = 端口空闲
+            # 连接失败表示端口空闲
             if offset > 0:
                 logger.info(f"端口 {start} 被占用，使用端口 {port}")
             return port

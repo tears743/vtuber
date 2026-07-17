@@ -75,7 +75,7 @@ function getPositionStyles(pos: string): React.CSSProperties {
 }
 
 function renderOverlayItem(item: OverlayItem, index: number, globalStyle: StyleType, position: string) {
-  const props = { ...(item.props || {}), position };
+  const props: Record<string, any> = { ...(item.props || {}), position };
   const style = item.style || globalStyle;
 
   switch (item.type) {

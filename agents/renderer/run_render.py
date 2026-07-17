@@ -284,7 +284,7 @@ def step_live2d(config: dict, today: str, data_root: Path):
     _step_live2d(today, max_workers=config.get("render", {}).get("workers", 2))
 
 
-def step_compose(config: dict, today: str, data_root: Path):
+def step_compose(config: dict, today: str, data_root: Path, progress_callback=None):
     """Step 4: 最终合成 (FFmpeg) — 演播室模式 + 素材转场
 
     合成模式:
@@ -301,6 +301,7 @@ def step_compose(config: dict, today: str, data_root: Path):
     live2d_dir = data_root / today / "live2d"
     audio_dir = data_root / today / "audio"
     visual_dir = data_root / today / "visual"
+    subtitle_dir = data_root / today / "subtitles"
     output_dir = data_root / today / "final"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -322,23 +323,27 @@ def step_compose(config: dict, today: str, data_root: Path):
         return
 
     success = 0
-    for script_path in script_files:
+    failed_scripts = []
+    for script_index, script_path in enumerate(script_files, start=1):
         with open(script_path, "r", encoding="utf-8") as f:
             script = json.load(f)
 
         script_id = script.get("id", script_path.stem)
         output_mp4 = output_dir / f"{script_id}.mp4"
 
-        # 跳过已存在且有效的（非空）
-        if output_mp4.exists() and output_mp4.stat().st_size > 0:
-            logger.info(f"[compose] ⏭️ 已存在: {script_id}")
-            success += 1
-            continue
+        # 图层或样式可能变化，最终视频必须重新合成，不能复用旧残缺产物。
+        output_mp4.unlink(missing_ok=True)
 
         logger.info(f"[compose] 合成: {script_id}")
+        if progress_callback:
+            progress_callback(
+                f"合成 [{script_index}/{len(script_files)}]: {script_id}",
+                0.05 + 0.85 * (script_index - 1) / max(len(script_files), 1),
+            )
 
         live2d_webm = live2d_dir / f"{script_id}_live2d.webm"
         overlay_webm = overlay_dir / f"{script_id}_overlay.webm"
+        subtitle_ass = subtitle_dir / f"{script_id}.ass"
 
         # 合并 TTS 音频
         audio_seg_dir = audio_dir / script_id
@@ -350,7 +355,24 @@ def step_compose(config: dict, today: str, data_root: Path):
         # 分析 visual 轨，找出素材段 (image/video_clip)
         tracks = script.get("tracks", {})
         visual_items = tracks.get("visual", [])
+        material_items = [
+            item for item in visual_items
+            if item.get("type") in {"image", "video_clip"}
+        ]
+        remotion_items = [item for item in visual_items if item.get("type") == "remotion"]
+        overlay_items = tracks.get("overlay", [])
+        voice_items = tracks.get("voice", [])
         media_segments = []
+        visual_intervals = []
+
+        for vis in material_items:
+            start_ms = int(vis.get("start_ms", 0) or 0)
+            duration_ms = int(vis.get("duration_ms", 0) or 0)
+            if duration_ms > 0:
+                visual_intervals.append({
+                    "start_s": start_ms / 1000.0,
+                    "end_s": (start_ms + duration_ms) / 1000.0,
+                })
 
         # 加载 manifest 用于 author fallback
         manifest_path = data_root / today / "media" / "manifest.json"
@@ -395,27 +417,58 @@ def step_compose(config: dict, today: str, data_root: Path):
 
         # 检测预合成的 visual 视频（visual_renderer 输出）
         visual_mp4 = visual_dir / f"{script_id}_visual.mp4"
-        if not visual_mp4.exists():
+        if not material_items or not visual_mp4.exists():
             visual_mp4 = None
 
+        missing_layers = []
+        if (overlay_items or remotion_items) and not overlay_webm.exists():
+            missing_layers.append("overlay")
+        if material_items and visual_mp4 is None:
+            missing_layers.append("visual")
+        if voice_items and not subtitle_ass.exists():
+            missing_layers.append("subtitles")
+        if missing_layers:
+            raise RuntimeError(
+                f"{script_id} 缺少已声明的渲染图层: {', '.join(missing_layers)}"
+            )
+
         # 构建 FFmpeg 命令
+        def _compose_progress(message, local_progress):
+            if not progress_callback:
+                return
+            local_progress = min(1.0, max(0.0, float(local_progress)))
+            overall_progress = 0.05 + 0.85 * (
+                (script_index - 1 + local_progress) / max(len(script_files), 1)
+            )
+            progress_callback(message, overall_progress)
+
         result = _compose_studio(
             studio_bg=studio_bg,
             studio_desk=studio_desk,
             live2d_webm=live2d_webm,
             overlay_webm=overlay_webm,
+            subtitle_ass=subtitle_ass,
 
             merged_audio=merged_audio,
             media_segments=media_segments,
+            visual_intervals=visual_intervals,
             visual_mp4=visual_mp4,
             duration_s=duration_s,
             output_mp4=output_mp4,
             script_id=script_id,
             today=today,
+            progress_callback=_compose_progress,
         )
 
         if result:
             success += 1
+        else:
+            failed_scripts.append(script_id)
+        if progress_callback:
+            progress_callback(
+                f"{'合成完成' if result else '合成失败'} [{script_index}/{len(script_files)}]: {script_id}",
+                0.05 + 0.85 * script_index / max(len(script_files), 1),
+            )
 
         # 清理临时合并音频
         if merged_audio and merged_audio.exists() and "final" in str(merged_audio.parent):
@@ -425,6 +478,154 @@ def step_compose(config: dict, today: str, data_root: Path):
                 pass
 
     logger.info(f"[compose] 合成完成: {success}/{len(script_files)}")
+    if failed_scripts:
+        raise RuntimeError(
+            f"最终合成失败 {len(failed_scripts)}/{len(script_files)}: "
+            + ", ".join(failed_scripts)
+        )
+    if progress_callback:
+        progress_callback(f"合成完成: {success}/{len(script_files)}", 1.0)
+    return {"success": success, "total": len(script_files)}
+
+
+def _probe_video_duration(video_path: Path) -> float | None:
+    """Return a positive duration only when ffprobe can read the video."""
+    import subprocess
+
+    if not video_path.exists() or video_path.stat().st_size <= 0:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0:
+            return None
+        duration = float(result.stdout.strip())
+        return duration if duration > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _format_ffmpeg_exit_code(returncode: int) -> str:
+    unsigned_code = returncode & 0xFFFFFFFF
+    label = f"{returncode} (0x{unsigned_code:08X})"
+    if unsigned_code == 0xC0000005:
+        return label + "，Windows 内存访问冲突（APPCRASH）"
+    return label
+
+
+def _read_ffmpeg_error_summary(error_log: Path, limit: int = 12) -> str:
+    if not error_log.exists():
+        return "FFmpeg 未输出错误详情"
+    try:
+        raw = error_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "无法读取 FFmpeg 错误日志"
+    lines = []
+    for line in raw.replace("\r", "\n").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("frame="):
+            continue
+        if stripped.startswith("Fontconfig error:"):
+            continue
+        lines.append(stripped)
+    return "\n".join(lines[-limit:]) if lines else "FFmpeg 进程无错误文本，可能发生外部终止或原生崩溃"
+
+
+def _run_ffmpeg_with_progress(
+    cmd: list[str],
+    duration_s: float,
+    error_log: Path,
+    progress_callback=None,
+    timeout: int = 18000,
+) -> tuple[int, bool, dict]:
+    """Run FFmpeg while streaming machine-readable progress updates."""
+    import queue
+    import subprocess
+    import threading
+    import time
+
+    progress_queue: queue.Queue = queue.Queue()
+    last_progress = {"frame": "0", "fps": "0", "out_time_s": 0.0, "speed": "0x"}
+
+    error_log.parent.mkdir(parents=True, exist_ok=True)
+    with error_log.open("w", encoding="utf-8", errors="replace") as error_file:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=error_file,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        def _read_progress():
+            try:
+                for line in process.stdout or []:
+                    progress_queue.put(line.rstrip())
+            finally:
+                progress_queue.put(None)
+
+        reader = threading.Thread(target=_read_progress, name="ffmpeg-progress", daemon=True)
+        reader.start()
+        deadline = time.monotonic() + timeout
+        stream_finished = False
+        timed_out = False
+        progress_data = {}
+
+        while True:
+            if time.monotonic() >= deadline and process.poll() is None:
+                timed_out = True
+                process.kill()
+
+            try:
+                line = progress_queue.get(timeout=0.5)
+            except queue.Empty:
+                line = ""
+
+            if line is None:
+                stream_finished = True
+            elif "=" in line:
+                key, value = line.split("=", 1)
+                progress_data[key] = value
+                if key == "progress":
+                    try:
+                        out_time_s = int(progress_data.get("out_time_ms", "0")) / 1_000_000
+                    except ValueError:
+                        out_time_s = 0.0
+                    last_progress = {
+                        "frame": progress_data.get("frame", "0"),
+                        "fps": progress_data.get("fps", "0"),
+                        "out_time_s": out_time_s,
+                        "speed": progress_data.get("speed", "0x"),
+                    }
+                    if progress_callback and duration_s > 0:
+                        ratio = min(1.0, max(0.0, out_time_s / duration_s))
+                        try:
+                            progress_callback(
+                                f"最终合成 {ratio * 100:.1f}% · {last_progress['frame']} 帧 · "
+                                f"{last_progress['fps']} fps · {last_progress['speed']}",
+                                0.08 + 0.87 * ratio,
+                            )
+                        except Exception as exc:
+                            logger.debug("FFmpeg 进度回调失败: %s", exc)
+
+            if process.poll() is not None and stream_finished:
+                break
+
+        reader.join(timeout=2)
+        return process.wait(), timed_out, last_progress
 
 
 def _compose_studio(
@@ -439,6 +640,9 @@ def _compose_studio(
     script_id: str,
     today: str = "",
     visual_mp4: Path = None,
+    subtitle_ass: Path = None,
+    visual_intervals: list = None,
+    progress_callback=None,
 ) -> bool:
     """演播室合成核心逻辑
 
@@ -447,11 +651,16 @@ def _compose_studio(
 
     当 visual_mp4 存在时，使用预合成视频替代逐段叠加（解决 filter chain 过长卡死）。
     """
-    import subprocess
-
     FADE_DURATION = 0.5
 
-    cmd = ["ffmpeg", "-y"]
+    partial_output = output_mp4.with_name(f"{output_mp4.stem}.part{output_mp4.suffix}")
+    error_log = output_mp4.parent / f"{script_id}_ffmpeg_err.log"
+    partial_output.unlink(missing_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-nostats",
+        "-stats_period", "1", "-progress", "pipe:1",
+        "-filter_complex_threads", "8",
+    ]
     input_idx = 0
 
     # Input 0: 演播室背景 (loop)
@@ -463,14 +672,14 @@ def _compose_studio(
     meteor_fx_path = Path(__file__).resolve().parent.parent.parent / "assets" / "studio" / "meteor_fx.webm"
     has_meteor = meteor_fx_path.exists()
     if has_meteor:
-        cmd.extend(["-stream_loop", "-1", "-vcodec", "libvpx-vp9", "-i", str(meteor_fx_path)])
+        cmd.extend(["-stream_loop", "-1", "-threads", "4", "-vcodec", "libvpx-vp9", "-i", str(meteor_fx_path)])
         meteor_idx = input_idx
         input_idx += 1
 
     # Input 1: Live2D (VP9 alpha)
     has_live2d = live2d_webm.exists()
     if has_live2d:
-        cmd.extend(["-vcodec", "libvpx-vp9", "-i", str(live2d_webm)])
+        cmd.extend(["-threads", "8", "-vcodec", "libvpx-vp9", "-i", str(live2d_webm)])
         l2d_idx = input_idx
         input_idx += 1
 
@@ -482,21 +691,44 @@ def _compose_studio(
     # Input 3: Overlay WebM (VP9 alpha)
     has_overlay = overlay_webm.exists()
     if has_overlay:
-        cmd.extend(["-vcodec", "libvpx-vp9", "-i", str(overlay_webm)])
+        cmd.extend(["-threads", "4", "-vcodec", "libvpx-vp9", "-i", str(overlay_webm)])
         ov_idx = input_idx
         input_idx += 1
 
     # Input 4+: 素材文件 或 预合成 visual 视频
     use_precomposed = visual_mp4 is not None and visual_mp4.exists()
     media_input_map = []
+    precomposed_visual_inputs = []
 
-    if use_precomposed:
-        # 使用预合成视频（1 个输入替代 N 个素材）
-        cmd.extend(["-i", str(visual_mp4)])
-        vis_mp4_idx = input_idx
-        input_idx += 1
-        logger.info(f"[compose] 使用预合成 visual: {visual_mp4.name}")
-    else:
+    if use_precomposed and visual_intervals:
+        # Only decode the short material windows. Blending one full-duration
+        # visual stream with a per-pixel expression is several times slower and
+        # triggered excessive FFmpeg filter threads on long videos.
+        for interval in visual_intervals:
+            start = max(0.0, float(interval.get("start_s", 0) or 0))
+            end = max(start, float(interval.get("end_s", 0) or 0))
+            duration = end - start
+            if duration <= 0:
+                continue
+            cmd.extend([
+                "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
+                "-threads", "2", "-i", str(visual_mp4),
+            ])
+            precomposed_visual_inputs.append({
+                "input_idx": input_idx,
+                "start_s": start,
+                "end_s": end,
+                "duration_s": duration,
+            })
+            input_idx += 1
+        use_precomposed = bool(precomposed_visual_inputs)
+        logger.info(
+            f"[compose] 使用预合成 visual 的 {len(precomposed_visual_inputs)} 个素材片段: "
+            f"{visual_mp4.name}"
+        )
+    if use_precomposed and not precomposed_visual_inputs:
+        use_precomposed = False
+    if not use_precomposed:
         # 逐个素材输入（兼容无预合成的情况）
         for seg in media_segments:
             if seg["type"] == "video_clip":
@@ -573,24 +805,25 @@ def _compose_studio(
     # 5. Visual 轨
     cur = "studio_ui"
 
-    if use_precomposed:
-        # 预合成模式：1 个输入 + enable 表达式控制素材可见时段
-        # visual.mp4 已经包含正确时间轴（黑底填充间隙），直接按时间段 overlay
-        enable_parts = [
-            f"between(t,{seg['start_s']},{seg['end_s']})"
-            for seg in media_segments
-        ]
-        if enable_parts:
-            enable_expr = "+".join(enable_parts)
+    if precomposed_visual_inputs:
+        # Each material window is trimmed and faded independently. This avoids a
+        # full-frame blend expression being evaluated for every pixel of the video.
+        for i, segment in enumerate(precomposed_visual_inputs):
+            mi = segment["input_idx"]
+            start = segment["start_s"]
+            duration = segment["duration_s"]
+            fade = min(FADE_DURATION, duration / 2)
+            fade_out_start = max(0.0, duration - fade)
             fp.append(
-                f"[{vis_mp4_idx}:v]scale=1080:1760:force_original_aspect_ratio=decrease,"
-                f"setsar=1,pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black[vis_pre]"
+                f"[{mi}:v]scale=1080:1760:force_original_aspect_ratio=decrease,"
+                "setsar=1,pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"trim=duration={duration:.3f},setpts=PTS-STARTPTS,format=yuva420p,"
+                f"fade=t=in:st=0:d={fade:.3f}:alpha=1,"
+                f"fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}:alpha=1,"
+                f"setpts=PTS+{start:.3f}/TB[previs_{i}]"
             )
-            nxt = "v_vis"
-            fp.append(
-                f"[{cur}][vis_pre]overlay=0:80:"
-                f"enable='gte({enable_expr},1)':eof_action=pass[{nxt}]"
-            )
+            nxt = f"v_pre{i}"
+            fp.append(f"[{cur}][previs_{i}]overlay=0:80:eof_action=pass:shortest=0[{nxt}]")
             cur = nxt
     else:
         # 逐段叠加模式（原始逻辑，用于素材少或无预合成的情况）
@@ -608,8 +841,8 @@ def _compose_studio(
                 f"[{mi}:v]scale=1080:1760:force_original_aspect_ratio=decrease,setsar=1,"
                 f"pad=1080:1760:(ow-iw)/2:(oh-ih)/2:color=black,"
                 f"setpts=PTS-STARTPTS,trim=duration={dur},setpts=PTS-STARTPTS,"
-                f"fade=t=in:st=0:d={fade_in_d},"
-                f"fade=t=out:st={fade_out_st}:d={FADE_DURATION}"
+                f"format=yuva420p,fade=t=in:st=0:d={fade_in_d}:alpha=1,"
+                f"fade=t=out:st={fade_out_st}:d={FADE_DURATION}:alpha=1"
             )
 
             media_filter += f",setpts=PTS+{start}/TB[media_{i}]"
@@ -622,11 +855,12 @@ def _compose_studio(
             cur = nxt
 
     # 6. Live2D 小版本 (素材段右下角, 延迟0.5s出现/提前0.5s消失)
-    if has_live2d and (media_segments or use_precomposed):
+    if has_live2d and (visual_intervals or media_segments or use_precomposed):
         delay = FADE_DURATION  # 和素材 fade 时长一致
+        visibility_intervals = visual_intervals or media_segments
         parts = [
             f"between(t,{seg['start_s']+delay},{seg['end_s']-delay})"
-            for seg in media_segments
+            for seg in visibility_intervals
             if seg['end_s'] - seg['start_s'] > delay * 3
         ]
         if parts:
@@ -641,12 +875,20 @@ def _compose_studio(
 
     # 7. Overlay (remotion 全程)
     if has_overlay:
-        fp.append(f"[{ov_idx}:v]scale=1080:1920[ov]")
+        fp.append(f"[{ov_idx}:v]scale=1080:1920,format=yuva420p[ov]")
         nxt = "v_final"
-        fp.append(f"[{cur}][ov]overlay=0:0:shortest=1[{nxt}]")
+        fp.append(f"[{cur}][ov]overlay=0:0:shortest=0:eof_action=pass[{nxt}]")
         cur = nxt
 
-    # 8. 输出格式
+    # 8. 独立字幕轨（最后叠加，保证不会被其他图层遮挡）
+    if subtitle_ass is not None and subtitle_ass.exists():
+        subtitle_path = str(subtitle_ass.resolve()).replace("\\", "/")
+        subtitle_path = subtitle_path.replace(":", r"\:").replace("'", r"\'")
+        nxt = "v_subtitle"
+        fp.append(f"[{cur}]ass=filename='{subtitle_path}'[{nxt}]")
+        cur = nxt
+
+    # 9. 输出格式
     fp.append(f"[{cur}]format=yuv420p[vout]")
 
     # 音频处理
@@ -660,7 +902,6 @@ def _compose_studio(
         afp = []
 
     # 合并 filter_complex — 写入临时文件以避免 Windows 命令行长度/编码问题
-    import tempfile
     filter_complex = ";".join(fp + afp)
     filter_script = output_mp4.parent / f"{script_id}_filter.txt"
     with open(filter_script, "w", encoding="utf-8") as f:
@@ -677,38 +918,64 @@ def _compose_studio(
     # Video encoding
     cmd.extend([
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        "-t", str(duration_s), str(output_mp4),
+        "-threads", "16", "-t", str(duration_s),
+        "-movflags", "+faststart", str(partial_output),
     ])
 
+    completed = False
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=18000, encoding="utf-8", errors="replace",
+        returncode, timed_out, last_progress = _run_ffmpeg_with_progress(
+            cmd,
+            duration_s=duration_s,
+            error_log=error_log,
+            progress_callback=progress_callback,
+            timeout=18000,
         )
-        if result.returncode == 0:
-            size_mb = output_mp4.stat().st_size / (1024 * 1024)
-            logger.info(f"[compose] ✅ {script_id} -> {size_mb:.1f}MB")
-            return True
-        else:
-            # 保存完整 stderr 到文件以供调试
-            err_log = output_mp4.parent / f"{script_id}_ffmpeg_err.log"
-            with open(err_log, "w", encoding="utf-8") as ef:
-                ef.write(result.stderr)
-            logger.error(f"[compose] ❌ {script_id}:\n{result.stderr[-800:]}")
+        if timed_out:
+            logger.error(
+                f"[compose] ⏰ 超时: {script_id}; 最后进度 "
+                f"{last_progress['out_time_s']:.1f}/{duration_s:.1f}s"
+            )
             return False
-    except subprocess.TimeoutExpired:
-        logger.error(f"[compose] ⏰ 超时: {script_id}")
+
+        if returncode == 0:
+            actual_duration = _probe_video_duration(partial_output)
+            minimum_duration = max(0.1, duration_s - max(1.0, duration_s * 0.01))
+            if actual_duration is None or actual_duration < minimum_duration:
+                logger.error(
+                    f"[compose] ❌ {script_id}: 输出校验失败，"
+                    f"duration={actual_duration}, expected={duration_s:.1f}s"
+                )
+                return False
+            output_mp4.unlink(missing_ok=True)
+            partial_output.replace(output_mp4)
+            size_mb = output_mp4.stat().st_size / (1024 * 1024)
+            logger.info(
+                f"[compose] ✅ {script_id} -> {size_mb:.1f}MB, "
+                f"{actual_duration:.1f}s"
+            )
+            completed = True
+            error_log.unlink(missing_ok=True)
+            return True
+        exit_code = _format_ffmpeg_exit_code(returncode)
+        summary = _read_ffmpeg_error_summary(error_log)
+        logger.error(
+            f"[compose] ❌ {script_id}: FFmpeg 退出码 {exit_code}; "
+            f"最后进度 {last_progress['out_time_s']:.1f}/{duration_s:.1f}s, "
+            f"frame={last_progress['frame']}, fps={last_progress['fps']}, "
+            f"speed={last_progress['speed']}\n{summary}\n错误日志: {error_log}"
+        )
         return False
     except Exception as e:
         logger.error(f"[compose] 💥 {script_id}: {e}")
         return False
     finally:
-        # 清理临时 filter 文件
-        if filter_script.exists():
-            try:
-                filter_script.unlink()
-            except:
-                pass
+        if not completed:
+            partial_output.unlink(missing_ok=True)
+            output_mp4.unlink(missing_ok=True)
+            logger.info(f"[compose] 已保留失败滤镜脚本: {filter_script}")
+        else:
+            filter_script.unlink(missing_ok=True)
 
 
 def _merge_audio_segments(audio_seg_dir: Path, script: dict, output_path: Path):

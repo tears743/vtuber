@@ -1,12 +1,20 @@
 /**
  * 右侧属性面板 — 编辑选中节点的配置
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { PromptEditor } from './PromptEditor'
 import { CronEditor } from './CronEditor'
+import { api } from '../api'
 
-export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange, onRunNode }) {
+export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange, onRunNode, onRunFromNode, onClearNodeCache }) {
   const [editingPrompt, setEditingPrompt] = useState(null) // {key, field}
+  const [models, setModels] = useState([])
+
+  useEffect(() => {
+    api.listModels()
+      .then(data => setModels(Array.isArray(data) ? data : []))
+      .catch(() => setModels([]))
+  }, [])
 
   if (!selectedNode) {
     return (
@@ -53,6 +61,22 @@ export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange,
           ▶ 手动触发
         </button>
 
+        <button
+          className="btn btn-success"
+          style={{ width: '100%', marginBottom: 8, padding: '6px 12px', fontSize: 13 }}
+          onClick={() => onRunFromNode?.(selectedNode.id)}
+        >
+          从此节点恢复运行
+        </button>
+
+        <button
+          className="btn btn-danger"
+          style={{ width: '100%', marginBottom: 8, padding: '6px 12px', fontSize: 13 }}
+          onClick={() => onClearNodeCache?.(selectedNode.id)}
+        >
+          清除节点缓存
+        </button>
+
         <div className="form-group">
           <label className="form-label">Reads</label>
           <input className="form-input" value={nodeDef?.reads?.join(', ') || '—'} disabled />
@@ -74,7 +98,7 @@ export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange,
                 {field.description}
               </div>
             )}
-            {renderField(key, field, config[key], handleChange, setEditingPrompt)}
+            {renderField(key, field, config[key], handleChange, setEditingPrompt, models)}
           </div>
         ))}
       </div>
@@ -93,8 +117,8 @@ export function PropertiesPanel({ selectedNode, nodeDefinitions, onConfigChange,
   )
 }
 
-function renderField(key, field, value, onChange, setEditingPrompt) {
-  const type = field.type
+function renderField(key, field, value, onChange, setEditingPrompt, models = []) {
+  const type = key === 'model' ? 'model' : field.type
 
   if (type === 'cron') {
     return (
@@ -145,13 +169,37 @@ function renderField(key, field, value, onChange, setEditingPrompt) {
         onChange={(e) => onChange(key, e.target.value)}
       >
         {(field.options || []).map(opt => (
-          <option key={opt} value={opt}>{opt}</option>
+          <option
+            key={typeof opt === 'object' ? opt.value : opt}
+            value={typeof opt === 'object' ? opt.value : opt}
+          >
+            {typeof opt === 'object' ? (opt.label || opt.value) : opt}
+          </option>
         ))}
       </select>
     )
   }
 
   if (type === 'model') {
+    const currentValue = value ?? field.default ?? ''
+    const hasCurrentValue = currentValue && !models.some(model => model.name === currentValue)
+    return (
+      <select
+        className="form-input form-select"
+        value={currentValue}
+        onChange={(e) => onChange(key, e.target.value)}
+      >
+        <option value="">请选择模型</option>
+        {hasCurrentValue && (
+          <option value={currentValue}>{currentValue}（未在全局模型中找到）</option>
+        )}
+        {models.map(model => (
+          <option key={model.name} value={model.name}>
+            {model.name}{model.capabilities?.length ? ` (${model.capabilities.join(', ')})` : ''}
+          </option>
+        ))}
+      </select>
+    )
     return (
       <input
         className="form-input"

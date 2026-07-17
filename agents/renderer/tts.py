@@ -15,6 +15,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+LEADING_INSTRUCTION_PATTERN = re.compile(r'^\s*([（(][^）)]{1,40}[）)])\s*')
+
+
 def get_wav_duration_ms(wav_path: Path) -> int:
     """读取 WAV 文件的实际时长（毫秒）"""
     with wave.open(str(wav_path), 'rb') as wf:
@@ -27,6 +30,12 @@ def get_wav_duration_ms(wav_path: Path) -> int:
 
 def clean_tts_text(text: str) -> str:
     """清洗文本，移除不适合 TTS 的字符"""
+    leading_instruction = ""
+    instruction_match = LEADING_INSTRUCTION_PATTERN.match(text)
+    if instruction_match:
+        leading_instruction = re.sub(r'\s+', ' ', instruction_match.group(1)).strip()
+        text = text[instruction_match.end():]
+
     # 转义序列
     text = text.replace("\\n", " ").replace("\\r", " ").replace("\\t", " ")
     text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
@@ -38,14 +47,14 @@ def clean_tts_text(text: str) -> str:
     text = re.sub(r'<[^>]+>', '', text)
     # Emoji
     text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U0001f900-\U0001f9FF\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\U00002702-\U000027B0]', '', text)
-    # 括号内短指令
+    # 保留代码统一添加的首个指令，移除正文中残留的括号指令。
     text = re.sub(r'[\(（][^\)）]{0,20}[\)）]', '', text)
     text = re.sub(r'[【\[][^】\]]{0,20}[】\]]', '', text)
     # 多余标点重复
     text = re.sub(r'([。！？…，、；：])\1+', r'\1', text)
     # 多余空格
     text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return f"{leading_instruction}{text}"
 
 
 class VoxCPMTTS:
@@ -58,12 +67,14 @@ class VoxCPMTTS:
         cfg_value: float = 2.0,
         inference_timesteps: int = 32,
         speed: str = "快",
+        customize: bool = True,
     ):
         self.url = url.rstrip("/")
         self.dialect = dialect
         self.cfg_value = cfg_value
         self.inference_timesteps = inference_timesteps
         self.speed = speed  # "快"/"慢"/"正常"
+        self.customize = bool(customize)
     
     def check_health(self) -> bool:
         """检查 TTS 服务是否可用"""
@@ -85,8 +96,13 @@ class VoxCPMTTS:
             (wav_path, duration_ms)
         """
         cleaned = clean_tts_text(text)
-        
-        if len(cleaned) <= 1:
+        instruction_match = LEADING_INSTRUCTION_PATTERN.match(cleaned)
+        if not self.customize and instruction_match:
+            cleaned = cleaned[instruction_match.end():].lstrip()
+            instruction_match = None
+        spoken_text = cleaned[instruction_match.end():] if instruction_match else cleaned
+
+        if len(spoken_text.strip()) <= 1:
             logger.warning(f"[tts] 文本过短，跳过: '{text[:30]}'")
             # 生成 0.1s 静音
             self._write_silence(output_path, 100)
@@ -97,8 +113,10 @@ class VoxCPMTTS:
             "cfg_value": self.cfg_value,
             "inference_timesteps": self.inference_timesteps,
         }
-        
-        if self.dialect:
+
+        if not self.customize:
+            payload["control_instruction"] = ""
+        elif self.dialect and not LEADING_INSTRUCTION_PATTERN.match(cleaned):
             ctrl = self.dialect
             if self.speed and self.speed != "正常":
                 ctrl += f"，语速{self.speed}一点"
@@ -165,7 +183,7 @@ class VoxCPMTTS:
             self._write_silence(output_path, 1000)
             return output_path, 1000
     
-    def synthesize_script(self, script: dict, audio_dir: Path) -> dict[int, int]:
+    def synthesize_script(self, script: dict, audio_dir: Path, progress_callback=None) -> dict[int, int]:
         """
         为一个脚本的所有 voice 轨条目生成音频
         
@@ -185,16 +203,20 @@ class VoxCPMTTS:
             voice_items = tracks["voice"]
             for i, item in enumerate(voice_items):
                 text = item.get("text", "")
-                if not text:
-                    continue
-                
-                wav_path = audio_dir / f"voice_{i:02d}.wav"
-                _, duration_ms = self.synthesize(text, wav_path)
-                durations[i] = duration_ms
+                if text:
+                    wav_path = audio_dir / f"voice_{i:02d}.wav"
+                    _, duration_ms = self.synthesize(text, wav_path)
+                    durations[i] = duration_ms
+                if progress_callback:
+                    progress_callback(
+                        f"生成语音 [{i + 1}/{len(voice_items)}]",
+                        (i + 1) / max(len(voice_items), 1),
+                    )
             return durations
         
         # 兼容旧格式: segments
-        for i, seg in enumerate(script.get("segments", [])):
+        segments = script.get("segments", [])
+        for i, seg in enumerate(segments):
             if seg.get("type") != "live2d_talk":
                 continue
             
@@ -205,6 +227,11 @@ class VoxCPMTTS:
             wav_path = audio_dir / f"seg_{i:02d}.wav"
             _, duration_ms = self.synthesize(text, wav_path)
             durations[i] = duration_ms
+            if progress_callback:
+                progress_callback(
+                    f"生成语音 [{i + 1}/{len(segments)}]",
+                    (i + 1) / max(len(segments), 1),
+                )
         
         return durations
     

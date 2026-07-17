@@ -91,7 +91,15 @@ class RecognizeNode(BaseNode):
 
         on_progress("识别素材中...", 0.1)
         import asyncio
-        manifest = await asyncio.to_thread(recognizer.recognize_all, media_dir, manifest_path)
+        def report_recognition(message, progress):
+            on_progress(message, 0.1 + 0.8 * progress)
+
+        manifest = await asyncio.to_thread(
+            recognizer.recognize_all,
+            media_dir,
+            manifest_path,
+            report_recognition,
+        )
         on_progress("识别完成", 0.9)
 
         # 更新 ctx.media (enriched)

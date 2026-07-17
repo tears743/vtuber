@@ -1,10 +1,11 @@
-"""
+﻿"""
 Collect 节点 — 数据采集
 
 对应: agents/collector/run_teams.py → CollectorOrchestrator
 """
 import json
 import logging
+import hashlib
 from pathlib import Path
 
 from server.nodes.base import BaseNode, NodeInput, NodeOutput
@@ -26,7 +27,15 @@ class CollectNode(BaseNode):
     author = "videofactory"
 
     # 新方式：连线桩声明
-    inputs = []  # collect 是入口节点，无上游连线
+    inputs = [
+        NodeInput(
+            name="trigger",
+            type="Trigger",
+            label="触发",
+            required=False,
+            description="可选事件入口，可连接定时触发等 Trigger 节点。",
+        )
+    ]
     outputs = [
         NodeOutput(name="collected", type="CollectedData", label="采集数据",
                    description="采集的原始数据（JSON 文件列表）"),
@@ -38,11 +47,22 @@ class CollectNode(BaseNode):
     output_dirs = ["collected"]
     cacheable = True
 
-    # 失败策略：采集失败可以跳过（用缓存数据）
-    on_failure = "skip"
+    # 失败后中止流程；已有上游输出缓存时会在执行前命中缓存，不需要异常后继续空跑。
+    on_failure = "abort"
     max_retries = 2
     retry_delay = 5.0
     config_schema = {
+        "collection_mode": {
+            "type": "enum",
+            "label": "采集模式",
+            "default": "ai_tech",
+            "options": [
+                {"value": "ai_tech", "label": "AI 科技"},
+                {"value": "daily_hot", "label": "今日热搜"},
+                {"value": "mixed", "label": "混合"},
+            ],
+            "description": "AI 科技优先采 GitHub/HuggingFace/模型榜；今日热搜优先采微博/抖音。"
+        },
         "run_date": {
             "type": "date", "label": "运行日期",
             "default": "",
@@ -102,18 +122,69 @@ class CollectNode(BaseNode):
     }
 
     SUPPORTED_PLATFORMS = {"weibo", "douyin", "github", "huggingface"}
+    MODE_PLATFORM_DEFAULTS = {
+        "ai_tech": ["github", "huggingface"],
+        "daily_hot": ["weibo", "douyin"],
+        "mixed": ["weibo", "douyin", "github", "huggingface"],
+    }
+
+    def _get_collection_mode(self) -> str:
+        raw = str(self.get_config("collection_mode", "ai_tech") or "ai_tech").strip().lower()
+        aliases = {
+            "ai": "ai_tech",
+            "tech": "ai_tech",
+            "ai科技": "ai_tech",
+            "ai 科技": "ai_tech",
+            "今日热搜": "daily_hot",
+            "热搜": "daily_hot",
+            "hot": "daily_hot",
+            "daily": "daily_hot",
+            "all": "mixed",
+            "混合": "mixed",
+        }
+        return aliases.get(raw, raw if raw in self.MODE_PLATFORM_DEFAULTS else "ai_tech")
 
     def _get_enabled_platforms(self) -> list[str]:
         platforms = self.get_config("platforms", ["weibo", "douyin", "github", "huggingface"])
         if not isinstance(platforms, list):
-            return ["weibo", "douyin", "github", "huggingface"]
+            platforms = ["weibo", "douyin", "github", "huggingface"]
 
         enabled = []
         for platform in platforms:
             name = str(platform).strip().lower()
             if name in self.SUPPORTED_PLATFORMS and name not in enabled:
                 enabled.append(name)
-        return enabled or ["weibo", "douyin", "github", "huggingface"]
+        selected = enabled or ["weibo", "douyin", "github", "huggingface"]
+        mode = self._get_collection_mode()
+        mode_defaults = self.MODE_PLATFORM_DEFAULTS[mode]
+        effective = [platform for platform in selected if platform in mode_defaults]
+        return effective or mode_defaults
+
+    def _cache_meta_path(self, data_dir: Path) -> Path:
+        return data_dir / ".collect_cache.json"
+
+    def _cache_signature(self, ctx: PipelineContext) -> str:
+        payload = {
+            "collector_version": "github_trending_complete_v2",
+            "mode": self._get_collection_mode(),
+            "platforms": self._get_enabled_platforms(),
+            "planning_prompt": self.get_config("planning_prompt", ""),
+            "worker_prompt": self.get_config("worker_prompt", ""),
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _write_cache_meta(self, ctx: PipelineContext, data_dir: Path) -> None:
+        meta = {
+            "date": ctx.date,
+            "mode": self._get_collection_mode(),
+            "platforms": self._get_enabled_platforms(),
+            "signature": self._cache_signature(ctx),
+        }
+        self._cache_meta_path(data_dir).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def _get_platform_files(self, data_dir: Path, date_str: str, platform: str) -> list[str]:
         pattern = f"{date_str}_{platform}_*.json"
@@ -144,6 +215,19 @@ class CollectNode(BaseNode):
             return False
 
         enabled_platforms = self._get_enabled_platforms()
+        meta_path = self._cache_meta_path(data_dir)
+        if not meta_path.exists():
+            logger.info(f"[{self.id}] collect 缓存未命中，缺少模式缓存标记")
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.info(f"[{self.id}] collect 缓存未命中，模式缓存标记不可读")
+            return False
+        if meta.get("signature") != self._cache_signature(ctx):
+            logger.info(f"[{self.id}] collect 缓存未命中，采集模式或平台已变化")
+            return False
+
         missing = [
             platform
             for platform in enabled_platforms
@@ -172,6 +256,7 @@ class CollectNode(BaseNode):
         orchestrator_cfg = get_model_config(config, "orchestrator")
         worker_cfg = get_model_config(config, "worker")
         enabled_platforms = self._get_enabled_platforms()
+        collection_mode = self._get_collection_mode()
 
         # 覆盖模型配置（如果节点上选了不同模型）
         models = config.get("models", {})
@@ -209,13 +294,20 @@ class CollectNode(BaseNode):
             data_dir=data_dir,
             max_workers=self.get_config("max_workers", 4),
             enabled_platforms=enabled_platforms,
+            collection_mode=collection_mode,
+            planning_prompt=self.get_config("planning_prompt", ""),
+            progress_callback=lambda message, progress: on_progress(
+                message,
+                0.1 + 0.8 * progress,
+            ),
         )
 
-        on_progress(f"采集中... ({', '.join(enabled_platforms)})", 0.2)
+        on_progress(f"采集中... ({collection_mode}: {', '.join(enabled_platforms)})", 0.2)
         import asyncio
         await asyncio.to_thread(orchestrator.run)
         on_progress("采集完成", 0.9)
 
+        self._write_cache_meta(ctx, data_dir)
         ctx.collected = self._build_collected_data(data_dir)
         on_progress(f"采集完成: {ctx.collected.count} 条", 1.0)
 

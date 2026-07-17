@@ -4,11 +4,11 @@
 
 当前仓库的正式文档集中在 `docs/` 目录，建议按下面顺序阅读：
 
-| 文档 | 路径 | 说明 |
-|------|------|------|
-| 项目总览 | `docs/codebase.md` | 整体代码结构、核心模块、目录说明 |
-| 传统主管线 | `docs/pipeline.md` | `run_pipeline.ps1` 的使用方式、步骤说明与故障排查 |
-| 自定义节点开发 | `docs/CUSTOM_NODES.md` | 当前 node 体系的开发规范、生命周期、前后端协议、节点包结构 |
+| 文档              | 路径                          | 说明                                                                  |
+| ----------------- | ----------------------------- | --------------------------------------------------------------------- |
+| 项目总览          | `docs/codebase.md`            | 整体代码结构、核心模块、目录说明                                      |
+| 传统主管线        | `docs/pipeline.md`            | `run_pipeline.ps1` 的使用方式、步骤说明与故障排查                     |
+| 自定义节点开发    | `docs/CUSTOM_NODES.md`        | 当前 node 体系的开发规范、生命周期、前后端协议、节点包结构            |
 | Node Runtime 现状 | `docs/NODE_SYSTEM_RUNTIME.md` | `feature/node-opt-v2` 分支已经落地的 node runtime、验证现状与已知限制 |
 
 如果你当前关注的是可视化工作流 / 节点体系，推荐阅读顺序：
@@ -21,10 +21,10 @@
 
 工程级 skill 放在根目录 `skills/` 下。
 
-| Skill | 路径 | 说明 |
-|------|------|------|
+| Skill              | 路径                                 | 说明                                                                                                                   |
+| ------------------ | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | Custom Node Author | `skills/custom-node-author/SKILL.md` | 用于手写自定义 VideoFactory node / node pack，适用于 Processor、Trigger、Listener 以及节点缓存、schema、运行时接入场景 |
-| Antigravity Bridge | `skills/antigravity-bridge/SKILL.md` | 通过 opencli 连接和操作 Antigravity IDE 聊天内容，读取/发送消息、提取代码，含 sandbox 限制排查指南 |
+| Antigravity Bridge | `skills/antigravity-bridge/SKILL.md` | 通过 opencli 连接和操作 Antigravity IDE 聊天内容，读取/发送消息、提取代码，含 sandbox 限制排查指南                     |
 
 ## 快速开始
 
@@ -54,7 +54,6 @@ Layer 2: 内容理解 (Gemma-4-26B / VibeVoice) → 视频理解 / 音频转录
 Layer 3: 编排决策 (Director Agent) → 选题 / 脚本 / 分镜
 Layer 4: 视频合成 (FFmpeg + Live2D + VoxCPM2) → 成品视频
 ```
- 
 
 现在还是一个agent跑收集么，你看看这篇文章，https://code.claude.com/docs/en/agent-teams，我们能采用这个架构么，并发采集会不会快很多，另外我把本地lm studio 的模型启动起来，尝试一下作为子agent模型看看效果怎么样，他的上下文长度是262144
 
@@ -68,9 +67,10 @@ Layer 4: 视频合成 (FFmpeg + Live2D + VoxCPM2) → 成品视频
 
 图片识别给个并发调用，并发最大10张
 
-
 hf token: (see config.yaml)
 
 如果你让大模型生成的卡片里应该还有效果描述
 
 powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1 -Date 2026-06-12
+
+last conversition :custom-feature.md

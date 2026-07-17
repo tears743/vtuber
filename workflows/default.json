@@ -2,7 +2,7 @@
   "id": "default",
   "name": "VideoFactory 默认管线",
   "created_at": "2026-06-29T00:29:56.795781",
-  "updated_at": "2026-07-08T22:24:19.346474",
+  "updated_at": "2026-07-12T03:52:39.873473",
   "nodes": [
     {
       "id": "collect_1",
@@ -11,7 +11,16 @@
         "x": 100,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "collected",
+          "type": "CollectedData",
+          "label": "采集数据",
+          "description": "采集的原始数据（JSON 文件列表）"
+        }
+      ]
     },
     {
       "id": "download_1",
@@ -20,7 +29,25 @@
         "x": 400,
         "y": 200
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "collected",
+          "type": "*",
+          "label": "collected",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "recognize_1",
@@ -29,7 +56,25 @@
         "x": 700,
         "y": 100
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "recognized",
+          "type": "*",
+          "label": "recognized",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "transcribe_1",
@@ -38,7 +83,25 @@
         "x": 700,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transcribed",
+          "type": "*",
+          "label": "transcribed",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "director_1",
@@ -47,7 +110,55 @@
         "x": 1000,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "collected",
+          "type": "*",
+          "label": "collected",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "recognized",
+          "type": "*",
+          "label": "recognized",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "transcribed",
+          "type": "*",
+          "label": "transcribed",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "selected",
+          "type": "*",
+          "label": "selected",
+          "description": ""
+        },
+        {
+          "name": "scripts",
+          "type": "*",
+          "label": "scripts",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "tts_1",
@@ -56,7 +167,25 @@
         "x": 1300,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "scripts",
+          "type": "*",
+          "label": "scripts",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "*",
+          "label": "audio",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "align_1",
@@ -65,7 +194,33 @@
         "x": 1600,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "scripts",
+          "type": "*",
+          "label": "scripts",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "audio",
+          "type": "*",
+          "label": "audio",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "aligned",
+          "type": "*",
+          "label": "aligned",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "overlay_1",
@@ -74,7 +229,25 @@
         "x": 1900,
         "y": 150
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "*",
+          "label": "aligned",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "overlay",
+          "type": "*",
+          "label": "overlay",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "visual_1",
@@ -83,7 +256,33 @@
         "x": 1900,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "*",
+          "label": "aligned",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "visual",
+          "type": "*",
+          "label": "visual",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "live2d_1",
@@ -92,7 +291,33 @@
         "x": 1900,
         "y": 450
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "*",
+          "label": "aligned",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "audio",
+          "type": "*",
+          "label": "audio",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "live2d",
+          "type": "*",
+          "label": "live2d",
+          "description": ""
+        }
+      ]
     },
     {
       "id": "compose_1",
@@ -101,77 +326,169 @@
         "x": 2200,
         "y": 300
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "*",
+          "label": "aligned",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "audio",
+          "type": "*",
+          "label": "audio",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "overlay",
+          "type": "*",
+          "label": "overlay",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "visual",
+          "type": "*",
+          "label": "visual",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "live2d",
+          "type": "*",
+          "label": "live2d",
+          "connected": true,
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "final",
+          "type": "*",
+          "label": "final",
+          "description": ""
+        }
+      ]
     }
   ],
   "edges": [
     {
       "source": "collect_1",
-      "target": "download_1"
+      "source_handle": "collected",
+      "target": "download_1",
+      "target_handle": "collected"
     },
     {
       "source": "download_1",
-      "target": "recognize_1"
+      "source_handle": "media",
+      "target": "recognize_1",
+      "target_handle": "media"
     },
     {
       "source": "download_1",
-      "target": "transcribe_1"
+      "source_handle": "media",
+      "target": "transcribe_1",
+      "target_handle": "media"
     },
     {
       "source": "collect_1",
-      "target": "director_1"
+      "source_handle": "collected",
+      "target": "director_1",
+      "target_handle": "collected"
     },
     {
       "source": "recognize_1",
-      "target": "director_1"
+      "source_handle": "recognized",
+      "target": "director_1",
+      "target_handle": "recognized"
     },
     {
       "source": "transcribe_1",
-      "target": "director_1"
+      "source_handle": "transcribed",
+      "target": "director_1",
+      "target_handle": "transcribed"
     },
     {
       "source": "director_1",
-      "target": "tts_1"
+      "source_handle": "selected",
+      "target": "tts_1",
+      "target_handle": "scripts"
     },
     {
       "source": "tts_1",
-      "target": "align_1"
+      "source_handle": "audio",
+      "target": "align_1",
+      "target_handle": "audio"
     },
     {
       "source": "align_1",
-      "target": "overlay_1"
+      "source_handle": "aligned",
+      "target": "overlay_1",
+      "target_handle": "aligned"
     },
     {
       "source": "align_1",
-      "target": "visual_1"
+      "source_handle": "aligned",
+      "target": "visual_1",
+      "target_handle": "aligned"
     },
     {
       "source": "align_1",
-      "target": "live2d_1"
+      "source_handle": "aligned",
+      "target": "live2d_1",
+      "target_handle": "aligned"
     },
     {
       "source": "overlay_1",
-      "target": "compose_1"
+      "source_handle": "overlay",
+      "target": "compose_1",
+      "target_handle": "overlay"
     },
     {
       "source": "visual_1",
-      "target": "compose_1"
+      "source_handle": "visual",
+      "target": "compose_1",
+      "target_handle": "visual"
     },
     {
       "source": "live2d_1",
-      "target": "compose_1"
+      "source_handle": "live2d",
+      "target": "compose_1",
+      "target_handle": "live2d"
     },
     {
       "source": "download_1",
-      "target": "visual_1"
+      "source_handle": "media",
+      "target": "visual_1",
+      "target_handle": "media"
     },
     {
       "source": "download_1",
-      "target": "compose_1"
+      "source_handle": "media",
+      "target": "compose_1",
+      "target_handle": "media"
     },
     {
       "source": "tts_1",
-      "target": "live2d_1"
+      "source_handle": "audio",
+      "target": "live2d_1",
+      "target_handle": "audio"
     }
   ]
 }

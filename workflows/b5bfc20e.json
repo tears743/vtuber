@@ -3,61 +3,1684 @@
   "name": "收集素材",
   "nodes": [
     {
-      "id": "collect_mrdg2vku",
-      "type": "collect",
-      "position": {
-        "x": 554.5,
-        "y": 293
-      },
-      "config": {
-        "run_date": "2026-07-09"
-      }
-    },
-    {
       "id": "download_mrdg2wo7",
       "type": "download",
       "position": {
-        "x": 792.5,
-        "y": 293.75
+        "x": 691.7504291885801,
+        "y": 215.75122767399768
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "collected",
+          "type": "*",
+          "label": "collected",
+          "connected": true,
+          "required": true,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "description": "",
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ]
     },
     {
-      "id": "cron_trigger_mrdg326m",
-      "type": "cron_trigger",
+      "id": "recognize_mrfyliyf",
+      "type": "recognize",
       "position": {
-        "x": 189.5,
-        "y": 290.25
+        "x": 988.1341782494364,
+        "y": 551.534816589543
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "recognized",
+          "type": "*",
+          "label": "recognized",
+          "description": "",
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ]
+    },
+    {
+      "id": "transcribe_mrfylkli",
+      "type": "transcribe",
+      "position": {
+        "x": 1123.6249405351411,
+        "y": 81.6511140589782
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "media",
+          "type": "*",
+          "label": "media",
+          "connected": true,
+          "required": true,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "transcribed",
+          "type": "*",
+          "label": "transcribed",
+          "description": "",
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ]
+    },
+    {
+      "id": "tech_broadcast_script_agent_mrgo9jjk",
+      "type": "tech_broadcast_script_agent",
+      "position": {
+        "x": 1425.705721689092,
+        "y": 508.54958914606243
       },
       "config": {
-        "cron_expr": "*/1 * * * *",
-        "timezone": "Asia/Shanghai"
-      }
+        "model": "deepseek-v4-flash",
+        "voice_instruction": ""
+      },
+      "inputs": [
+        {
+          "name": "collected",
+          "type": "CollectedData",
+          "label": "采集数据",
+          "default": null,
+          "required": false,
+          "description": "采集节点输出的完整原始选题池，包含尚无本地媒体的科技条目。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "CollectedData",
+            "label": "CollectedData",
+            "description": "采集节点输出的原始素材索引，通常包含微博/抖音/GitHub/HuggingFace 等来源的 JSON 文件。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "采集结果目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "采集到的 JSON 文件路径列表。"
+              },
+              {
+                "name": "count",
+                "type": "int",
+                "required": false,
+                "description": "采集条目数量。"
+              },
+              {
+                "name": "platforms",
+                "type": "dict",
+                "required": false,
+                "description": "按平台统计或分组的数据对象。"
+              }
+            ]
+          },
+          "format_text": "CollectedData\n采集节点输出的原始素材索引，通常包含微博/抖音/GitHub/HuggingFace 等来源的 JSON 文件。\n- dir: Path (required)\n- files: list (optional)\n- count: int (optional)\n- platforms: dict (optional)"
+        },
+        {
+          "name": "media",
+          "type": "MediaData",
+          "label": "素材",
+          "default": null,
+          "required": false,
+          "description": "下载节点输出的素材清单。未连接时会从运行上下文中读取。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "MediaData",
+            "label": "MediaData",
+            "description": "下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "媒体下载目录。"
+              },
+              {
+                "name": "manifest_path",
+                "type": "Path",
+                "required": false,
+                "description": "manifest.json 文件路径。"
+              },
+              {
+                "name": "manifest",
+                "type": "dict",
+                "required": false,
+                "description": "媒体清单对象，记录每条素材及其本地文件。"
+              },
+              {
+                "name": "total_items",
+                "type": "int",
+                "required": false,
+                "description": "素材条目总数。"
+              },
+              {
+                "name": "total_images",
+                "type": "int",
+                "required": false,
+                "description": "图片数量。"
+              },
+              {
+                "name": "total_videos",
+                "type": "int",
+                "required": false,
+                "description": "视频数量。"
+              },
+              {
+                "name": "total_readmes",
+                "type": "int",
+                "required": false,
+                "description": "README/文本素材数量。"
+              }
+            ]
+          },
+          "format_text": "MediaData\n下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。\n- dir: Path (required)\n- manifest_path: Path (optional)\n- manifest: dict (optional)\n- total_items: int (optional)\n- total_images: int (optional)\n- total_videos: int (optional)\n- total_readmes: int (optional)"
+        },
+        {
+          "name": "recognized",
+          "type": "*",
+          "label": "素材识别",
+          "default": null,
+          "required": false,
+          "description": "素材识别完成信号或识别结果。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        },
+        {
+          "name": "transcribed",
+          "type": "*",
+          "label": "音频转录",
+          "default": null,
+          "required": false,
+          "description": "音频转录完成信号或转录结果。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "scripts",
+          "type": "ScriptsData",
+          "label": "口播脚本",
+          "description": "可直接连接到 TTS 节点 scripts 输入的脚本数据。",
+          "format_schema": {
+            "type": "ScriptsData",
+            "label": "ScriptsData",
+            "description": "口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "脚本输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "脚本文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "脚本内容字典，通常按视频/片段编号组织文本和角色信息。"
+              },
+              {
+                "name": "total_duration_ms",
+                "type": "dict",
+                "required": false,
+                "description": "每段脚本的目标总时长，单位毫秒；可为空，由后续音频补齐。"
+              }
+            ]
+          },
+          "format_text": "ScriptsData\n口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)\n- total_duration_ms: dict (optional)"
+        }
+      ]
     },
     {
-      "id": "wechat_channel_mrdg3klr",
-      "type": "wechat_channel",
+      "id": "collect_mrigjxir",
+      "type": "collect",
       "position": {
-        "x": 1090,
-        "y": 279.75
+        "x": 326.1298037190081,
+        "y": 210.5
       },
-      "config": {}
+      "config": {},
+      "inputs": [
+        {
+          "name": "trigger",
+          "type": "Trigger",
+          "label": "触发",
+          "default": null,
+          "required": false,
+          "description": "可选事件入口，可连接定时触发等 Trigger 节点。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "Trigger",
+            "label": "触发事件",
+            "description": "Trigger/Listener 节点发出的事件信号。",
+            "fields": [
+              {
+                "name": "triggered_at",
+                "type": "ISO datetime string",
+                "required": false,
+                "description": "触发时间。"
+              },
+              {
+                "name": "payload",
+                "type": "object",
+                "required": false,
+                "description": "可选事件载荷。"
+              }
+            ]
+          },
+          "format_text": "Trigger\nTrigger/Listener 节点发出的事件信号。\n- triggered_at: ISO datetime string (optional)\n- payload: object (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "collected",
+          "type": "CollectedData",
+          "label": "采集数据",
+          "description": "采集的原始数据（JSON 文件列表）",
+          "format_schema": {
+            "type": "CollectedData",
+            "label": "CollectedData",
+            "description": "采集节点输出的原始素材索引，通常包含微博/抖音/GitHub/HuggingFace 等来源的 JSON 文件。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "采集结果目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "采集到的 JSON 文件路径列表。"
+              },
+              {
+                "name": "count",
+                "type": "int",
+                "required": false,
+                "description": "采集条目数量。"
+              },
+              {
+                "name": "platforms",
+                "type": "dict",
+                "required": false,
+                "description": "按平台统计或分组的数据对象。"
+              }
+            ]
+          },
+          "format_text": "CollectedData\n采集节点输出的原始素材索引，通常包含微博/抖音/GitHub/HuggingFace 等来源的 JSON 文件。\n- dir: Path (required)\n- files: list (optional)\n- count: int (optional)\n- platforms: dict (optional)"
+        }
+      ]
+    },
+    {
+      "id": "voice_visual_director_mrjbc100",
+      "type": "voice_visual_director_agent",
+      "position": {
+        "x": 1972.1281401024999,
+        "y": 141.8026430301089
+      },
+      "config": {
+        "model": "deepseek-v4-flash"
+      },
+      "inputs": [
+        {
+          "name": "scripts",
+          "type": "ScriptsData",
+          "label": "已配音脚本",
+          "default": null,
+          "required": true,
+          "description": "TTS 回填真实 duration/audio_file 后的口播脚本。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "ScriptsData",
+            "label": "ScriptsData",
+            "description": "口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "脚本输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "脚本文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "脚本内容字典，通常按视频/片段编号组织文本和角色信息。"
+              },
+              {
+                "name": "total_duration_ms",
+                "type": "dict",
+                "required": false,
+                "description": "每段脚本的目标总时长，单位毫秒；可为空，由后续音频补齐。"
+              }
+            ]
+          },
+          "format_text": "ScriptsData\n口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)\n- total_duration_ms: dict (optional)"
+        },
+        {
+          "name": "audio",
+          "type": "AudioData",
+          "label": "音频",
+          "default": null,
+          "required": true,
+          "description": "TTS 输出的音频数据和 durations.json。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "AudioData",
+            "label": "AudioData",
+            "description": "TTS 生成后的音频结果和时长信息。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "音频输出目录。"
+              },
+              {
+                "name": "durations_path",
+                "type": "Path",
+                "required": false,
+                "description": "durations.json 文件路径。"
+              },
+              {
+                "name": "durations",
+                "type": "dict",
+                "required": false,
+                "description": "每段音频的时长表，通常以脚本/片段 ID 为 key。"
+              },
+              {
+                "name": "segments",
+                "type": "dict",
+                "required": false,
+                "description": "音频分段信息，包含生成文件路径、角色、文本等节点产出的元数据。"
+              }
+            ]
+          },
+          "format_text": "AudioData\nTTS 生成后的音频结果和时长信息。\n- dir: Path (required)\n- durations_path: Path (optional)\n- durations: dict (optional)\n- segments: dict (optional)"
+        },
+        {
+          "name": "media",
+          "type": "MediaData",
+          "label": "素材",
+          "default": null,
+          "required": false,
+          "description": "下载/识别/转录后的素材清单，用于选择画面、引用和数据卡。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "MediaData",
+            "label": "MediaData",
+            "description": "下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "媒体下载目录。"
+              },
+              {
+                "name": "manifest_path",
+                "type": "Path",
+                "required": false,
+                "description": "manifest.json 文件路径。"
+              },
+              {
+                "name": "manifest",
+                "type": "dict",
+                "required": false,
+                "description": "媒体清单对象，记录每条素材及其本地文件。"
+              },
+              {
+                "name": "total_items",
+                "type": "int",
+                "required": false,
+                "description": "素材条目总数。"
+              },
+              {
+                "name": "total_images",
+                "type": "int",
+                "required": false,
+                "description": "图片数量。"
+              },
+              {
+                "name": "total_videos",
+                "type": "int",
+                "required": false,
+                "description": "视频数量。"
+              },
+              {
+                "name": "total_readmes",
+                "type": "int",
+                "required": false,
+                "description": "README/文本素材数量。"
+              }
+            ]
+          },
+          "format_text": "MediaData\n下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。\n- dir: Path (required)\n- manifest_path: Path (optional)\n- manifest: dict (optional)\n- total_items: int (optional)\n- total_images: int (optional)\n- total_videos: int (optional)\n- total_readmes: int (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "aligned",
+          "type": "AlignedData",
+          "label": "最终脚本",
+          "description": "无需再对齐、可直接进入渲染与合成的多轨脚本。",
+          "format_schema": {
+            "type": "AlignedData",
+            "label": "AlignedData",
+            "description": "脚本与音频对齐后的时间轴数据。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "对齐输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "对齐结果文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "带时间戳的脚本/字幕/片段结构。"
+              }
+            ]
+          },
+          "format_text": "AlignedData\n脚本与音频对齐后的时间轴数据。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)"
+        }
+      ]
+    },
+    {
+      "id": "overlay_mrjbc101",
+      "type": "overlay",
+      "position": {
+        "x": 2325,
+        "y": 120
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "AlignedData",
+          "label": "多轨脚本",
+          "default": null,
+          "required": true,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "AlignedData",
+            "label": "AlignedData",
+            "description": "脚本与音频对齐后的时间轴数据。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "对齐输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "对齐结果文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "带时间戳的脚本/字幕/片段结构。"
+              }
+            ]
+          },
+          "format_text": "AlignedData\n脚本与音频对齐后的时间轴数据。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "overlay",
+          "type": "OverlayData",
+          "label": "Overlay 图层",
+          "description": "",
+          "format_schema": {
+            "type": "OverlayData",
+            "label": "OverlayData",
+            "description": "字幕、贴纸、覆盖层等渲染产物。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "覆盖层输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "按视频/片段组织的产物文件字典。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功处理数量。"
+              },
+              {
+                "name": "failed_count",
+                "type": "int",
+                "required": false,
+                "description": "失败数量。"
+              }
+            ]
+          },
+          "format_text": "OverlayData\n字幕、贴纸、覆盖层等渲染产物。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)\n- failed_count: int (optional)"
+        }
+      ]
+    },
+    {
+      "id": "visual_mrjbc102",
+      "type": "visual",
+      "position": {
+        "x": 2325,
+        "y": 284
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "AlignedData",
+          "label": "多轨脚本",
+          "default": null,
+          "required": true,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "AlignedData",
+            "label": "AlignedData",
+            "description": "脚本与音频对齐后的时间轴数据。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "对齐输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "对齐结果文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "带时间戳的脚本/字幕/片段结构。"
+              }
+            ]
+          },
+          "format_text": "AlignedData\n脚本与音频对齐后的时间轴数据。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)"
+        },
+        {
+          "name": "media",
+          "type": "MediaData",
+          "label": "媒体素材",
+          "default": null,
+          "required": false,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "MediaData",
+            "label": "MediaData",
+            "description": "下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "媒体下载目录。"
+              },
+              {
+                "name": "manifest_path",
+                "type": "Path",
+                "required": false,
+                "description": "manifest.json 文件路径。"
+              },
+              {
+                "name": "manifest",
+                "type": "dict",
+                "required": false,
+                "description": "媒体清单对象，记录每条素材及其本地文件。"
+              },
+              {
+                "name": "total_items",
+                "type": "int",
+                "required": false,
+                "description": "素材条目总数。"
+              },
+              {
+                "name": "total_images",
+                "type": "int",
+                "required": false,
+                "description": "图片数量。"
+              },
+              {
+                "name": "total_videos",
+                "type": "int",
+                "required": false,
+                "description": "视频数量。"
+              },
+              {
+                "name": "total_readmes",
+                "type": "int",
+                "required": false,
+                "description": "README/文本素材数量。"
+              }
+            ]
+          },
+          "format_text": "MediaData\n下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。\n- dir: Path (required)\n- manifest_path: Path (optional)\n- manifest: dict (optional)\n- total_items: int (optional)\n- total_images: int (optional)\n- total_videos: int (optional)\n- total_readmes: int (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "visual",
+          "type": "VisualData",
+          "label": "Visual 图层",
+          "description": "",
+          "format_schema": {
+            "type": "VisualData",
+            "label": "VisualData",
+            "description": "视觉素材或画面生成结果。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "视觉输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "生成图片/视频/中间文件字典。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功处理数量。"
+              }
+            ]
+          },
+          "format_text": "VisualData\n视觉素材或画面生成结果。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)"
+        }
+      ]
+    },
+    {
+      "id": "live2d_mrjbc103",
+      "type": "live2d",
+      "position": {
+        "x": 2325,
+        "y": 448
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "*",
+          "label": "aligned",
+          "connected": true,
+          "required": true,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        },
+        {
+          "name": "audio",
+          "type": "*",
+          "label": "audio",
+          "connected": true,
+          "required": true,
+          "multi": false,
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "live2d",
+          "type": "*",
+          "label": "live2d",
+          "description": "",
+          "format_schema": {
+            "type": "*",
+            "label": "Any",
+            "description": "任意上游值。具体结构要看连接的输出端口。",
+            "fields": []
+          },
+          "format_text": "*\n任意上游值。具体结构要看连接的输出端口。"
+        }
+      ]
+    },
+    {
+      "id": "subtitle_mrsubtitle1",
+      "type": "subtitle",
+      "position": {
+        "x": 2325,
+        "y": 612
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "AlignedData",
+          "label": "多轨脚本",
+          "default": null,
+          "required": true,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "AlignedData",
+            "label": "AlignedData",
+            "description": "脚本与音频对齐后的时间轴数据。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "对齐输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "对齐结果文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "带时间戳的脚本/字幕/片段结构。"
+              }
+            ]
+          },
+          "format_text": "AlignedData\n脚本与音频对齐后的时间轴数据。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "subtitles",
+          "type": "SubtitleData",
+          "label": "字幕轨",
+          "description": "",
+          "format_schema": {
+            "type": "SubtitleData",
+            "label": "SubtitleData",
+            "description": "根据真实语音时间轴生成的独立字幕轨文件。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "字幕输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "按脚本 ID 组织的 ASS 字幕文件。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功生成的字幕文件数量。"
+              }
+            ]
+          },
+          "format_text": "SubtitleData\n根据真实语音时间轴生成的独立字幕轨文件。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)"
+        }
+      ]
+    },
+    {
+      "id": "compose_mrjbc104",
+      "type": "compose",
+      "position": {
+        "x": 2734.1124842053136,
+        "y": 284
+      },
+      "config": {},
+      "inputs": [
+        {
+          "name": "aligned",
+          "type": "AlignedData",
+          "label": "多轨脚本",
+          "default": null,
+          "required": true,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "AlignedData",
+            "label": "AlignedData",
+            "description": "脚本与音频对齐后的时间轴数据。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "对齐输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "对齐结果文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "带时间戳的脚本/字幕/片段结构。"
+              }
+            ]
+          },
+          "format_text": "AlignedData\n脚本与音频对齐后的时间轴数据。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)"
+        },
+        {
+          "name": "audio",
+          "type": "AudioData",
+          "label": "音频",
+          "default": null,
+          "required": true,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "AudioData",
+            "label": "AudioData",
+            "description": "TTS 生成后的音频结果和时长信息。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "音频输出目录。"
+              },
+              {
+                "name": "durations_path",
+                "type": "Path",
+                "required": false,
+                "description": "durations.json 文件路径。"
+              },
+              {
+                "name": "durations",
+                "type": "dict",
+                "required": false,
+                "description": "每段音频的时长表，通常以脚本/片段 ID 为 key。"
+              },
+              {
+                "name": "segments",
+                "type": "dict",
+                "required": false,
+                "description": "音频分段信息，包含生成文件路径、角色、文本等节点产出的元数据。"
+              }
+            ]
+          },
+          "format_text": "AudioData\nTTS 生成后的音频结果和时长信息。\n- dir: Path (required)\n- durations_path: Path (optional)\n- durations: dict (optional)\n- segments: dict (optional)"
+        },
+        {
+          "name": "overlay",
+          "type": "OverlayData",
+          "label": "Overlay 图层",
+          "default": null,
+          "required": false,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "OverlayData",
+            "label": "OverlayData",
+            "description": "字幕、贴纸、覆盖层等渲染产物。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "覆盖层输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "按视频/片段组织的产物文件字典。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功处理数量。"
+              },
+              {
+                "name": "failed_count",
+                "type": "int",
+                "required": false,
+                "description": "失败数量。"
+              }
+            ]
+          },
+          "format_text": "OverlayData\n字幕、贴纸、覆盖层等渲染产物。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)\n- failed_count: int (optional)"
+        },
+        {
+          "name": "visual",
+          "type": "VisualData",
+          "label": "Visual 图层",
+          "default": null,
+          "required": false,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "VisualData",
+            "label": "VisualData",
+            "description": "视觉素材或画面生成结果。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "视觉输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "生成图片/视频/中间文件字典。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功处理数量。"
+              }
+            ]
+          },
+          "format_text": "VisualData\n视觉素材或画面生成结果。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)"
+        },
+        {
+          "name": "subtitles",
+          "type": "SubtitleData",
+          "label": "字幕轨",
+          "default": null,
+          "required": true,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "SubtitleData",
+            "label": "SubtitleData",
+            "description": "根据真实语音时间轴生成的独立字幕轨文件。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "字幕输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "按脚本 ID 组织的 ASS 字幕文件。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功生成的字幕文件数量。"
+              }
+            ]
+          },
+          "format_text": "SubtitleData\n根据真实语音时间轴生成的独立字幕轨文件。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)"
+        },
+        {
+          "name": "live2d",
+          "type": "Live2DData",
+          "label": "Live2D 图层",
+          "default": null,
+          "required": false,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "Live2DData",
+            "label": "Live2DData",
+            "description": "Live2D 驱动或人物视频相关产物。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "Live2D 输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "生成文件字典。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功处理数量。"
+              }
+            ]
+          },
+          "format_text": "Live2DData\nLive2D 驱动或人物视频相关产物。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)"
+        },
+        {
+          "name": "media",
+          "type": "MediaData",
+          "label": "媒体素材",
+          "default": null,
+          "required": false,
+          "description": "",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "MediaData",
+            "label": "MediaData",
+            "description": "下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "媒体下载目录。"
+              },
+              {
+                "name": "manifest_path",
+                "type": "Path",
+                "required": false,
+                "description": "manifest.json 文件路径。"
+              },
+              {
+                "name": "manifest",
+                "type": "dict",
+                "required": false,
+                "description": "媒体清单对象，记录每条素材及其本地文件。"
+              },
+              {
+                "name": "total_items",
+                "type": "int",
+                "required": false,
+                "description": "素材条目总数。"
+              },
+              {
+                "name": "total_images",
+                "type": "int",
+                "required": false,
+                "description": "图片数量。"
+              },
+              {
+                "name": "total_videos",
+                "type": "int",
+                "required": false,
+                "description": "视频数量。"
+              },
+              {
+                "name": "total_readmes",
+                "type": "int",
+                "required": false,
+                "description": "README/文本素材数量。"
+              }
+            ]
+          },
+          "format_text": "MediaData\n下载后的本地媒体素材清单，包含图片、视频、README 等本地文件索引。\n- dir: Path (required)\n- manifest_path: Path (optional)\n- manifest: dict (optional)\n- total_items: int (optional)\n- total_images: int (optional)\n- total_videos: int (optional)\n- total_readmes: int (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "final",
+          "type": "FinalData",
+          "label": "最终视频",
+          "description": "",
+          "format_schema": {
+            "type": "FinalData",
+            "label": "FinalData",
+            "description": "最终合成视频结果。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "最终输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "dict",
+                "required": false,
+                "description": "最终视频和关联文件字典。"
+              },
+              {
+                "name": "success_count",
+                "type": "int",
+                "required": false,
+                "description": "成功合成数量。"
+              },
+              {
+                "name": "total_duration_s",
+                "type": "dict",
+                "required": false,
+                "description": "最终视频时长，单位秒。"
+              }
+            ]
+          },
+          "format_text": "FinalData\n最终合成视频结果。\n- dir: Path (required)\n- files: dict (optional)\n- success_count: int (optional)\n- total_duration_s: dict (optional)"
+        }
+      ]
+    },
+    {
+      "id": "tts_mrm77bf6",
+      "type": "tts",
+      "position": {
+        "x": 1761.7195946766724,
+        "y": 495.9715248267455
+      },
+      "config": {
+        "customize": false
+      },
+      "inputs": [
+        {
+          "name": "scripts",
+          "type": "ScriptsData",
+          "label": "口播脚本",
+          "default": null,
+          "required": true,
+          "description": "口播 Agent 或 Director 输出的脚本。",
+          "options": null,
+          "min": null,
+          "max": null,
+          "step": null,
+          "hidden": false,
+          "group": "basic",
+          "connected": false,
+          "multi": false,
+          "format_schema": {
+            "type": "ScriptsData",
+            "label": "ScriptsData",
+            "description": "口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "脚本输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "脚本文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "脚本内容字典，通常按视频/片段编号组织文本和角色信息。"
+              },
+              {
+                "name": "total_duration_ms",
+                "type": "dict",
+                "required": false,
+                "description": "每段脚本的目标总时长，单位毫秒；可为空，由后续音频补齐。"
+              }
+            ]
+          },
+          "format_text": "ScriptsData\n口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)\n- total_duration_ms: dict (optional)"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AudioData",
+          "label": "音频",
+          "description": "VoxCPM 生成的 WAV 文件和实际时长索引。",
+          "format_schema": {
+            "type": "AudioData",
+            "label": "AudioData",
+            "description": "TTS 生成后的音频结果和时长信息。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "音频输出目录。"
+              },
+              {
+                "name": "durations_path",
+                "type": "Path",
+                "required": false,
+                "description": "durations.json 文件路径。"
+              },
+              {
+                "name": "durations",
+                "type": "dict",
+                "required": false,
+                "description": "每段音频的时长表，通常以脚本/片段 ID 为 key。"
+              },
+              {
+                "name": "segments",
+                "type": "dict",
+                "required": false,
+                "description": "音频分段信息，包含生成文件路径、角色、文本等节点产出的元数据。"
+              }
+            ]
+          },
+          "format_text": "AudioData\nTTS 生成后的音频结果和时长信息。\n- dir: Path (required)\n- durations_path: Path (optional)\n- durations: dict (optional)\n- segments: dict (optional)"
+        },
+        {
+          "name": "scripts",
+          "type": "ScriptsData",
+          "label": "已回填脚本",
+          "description": "已写入真实音频时长、起始时间和音频路径的脚本。",
+          "format_schema": {
+            "type": "ScriptsData",
+            "label": "ScriptsData",
+            "description": "口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。",
+            "fields": [
+              {
+                "name": "dir",
+                "type": "Path",
+                "required": true,
+                "description": "脚本输出目录。"
+              },
+              {
+                "name": "files",
+                "type": "list",
+                "required": false,
+                "description": "脚本文件路径列表。"
+              },
+              {
+                "name": "scripts",
+                "type": "dict",
+                "required": false,
+                "description": "脚本内容字典，通常按视频/片段编号组织文本和角色信息。"
+              },
+              {
+                "name": "total_duration_ms",
+                "type": "dict",
+                "required": false,
+                "description": "每段脚本的目标总时长，单位毫秒；可为空，由后续音频补齐。"
+              }
+            ]
+          },
+          "format_text": "ScriptsData\n口播/分镜脚本数据，后续 TTS、对齐、合成节点会读取它。\n- dir: Path (required)\n- files: list (optional)\n- scripts: dict (optional)\n- total_duration_ms: dict (optional)"
+        }
+      ]
     }
   ],
   "edges": [
     {
-      "source": "cron_trigger_mrdg326m",
-      "target": "collect_mrdg2vku"
-    },
-    {
-      "source": "collect_mrdg2vku",
-      "target": "download_mrdg2wo7"
+      "source": "download_mrdg2wo7",
+      "source_handle": "media",
+      "target": "recognize_mrfyliyf",
+      "target_handle": "media"
     },
     {
       "source": "download_mrdg2wo7",
-      "target": "wechat_channel_mrdg3klr"
+      "source_handle": "media",
+      "target": "transcribe_mrfylkli",
+      "target_handle": "media"
+    },
+    {
+      "source": "recognize_mrfyliyf",
+      "source_handle": "recognized",
+      "target": "tech_broadcast_script_agent_mrgo9jjk",
+      "target_handle": "recognized"
+    },
+    {
+      "source": "transcribe_mrfylkli",
+      "source_handle": "transcribed",
+      "target": "tech_broadcast_script_agent_mrgo9jjk",
+      "target_handle": "transcribed"
+    },
+    {
+      "source": "download_mrdg2wo7",
+      "source_handle": "media",
+      "target": "tech_broadcast_script_agent_mrgo9jjk",
+      "target_handle": "media"
+    },
+    {
+      "source": "collect_mrigjxir",
+      "source_handle": "collected",
+      "target": "download_mrdg2wo7",
+      "target_handle": "collected"
+    },
+    {
+      "source": "voice_visual_director_mrjbc100",
+      "source_handle": "aligned",
+      "target": "overlay_mrjbc101",
+      "target_handle": "aligned"
+    },
+    {
+      "source": "voice_visual_director_mrjbc100",
+      "source_handle": "aligned",
+      "target": "visual_mrjbc102",
+      "target_handle": "aligned"
+    },
+    {
+      "source": "voice_visual_director_mrjbc100",
+      "source_handle": "aligned",
+      "target": "live2d_mrjbc103",
+      "target_handle": "aligned"
+    },
+    {
+      "source": "voice_visual_director_mrjbc100",
+      "source_handle": "aligned",
+      "target": "subtitle_mrsubtitle1",
+      "target_handle": "aligned"
+    },
+    {
+      "source": "voice_visual_director_mrjbc100",
+      "source_handle": "aligned",
+      "target": "compose_mrjbc104",
+      "target_handle": "aligned"
+    },
+    {
+      "source": "download_mrdg2wo7",
+      "source_handle": "media",
+      "target": "visual_mrjbc102",
+      "target_handle": "media"
+    },
+    {
+      "source": "download_mrdg2wo7",
+      "source_handle": "media",
+      "target": "compose_mrjbc104",
+      "target_handle": "media"
+    },
+    {
+      "source": "overlay_mrjbc101",
+      "source_handle": "overlay",
+      "target": "compose_mrjbc104",
+      "target_handle": "overlay"
+    },
+    {
+      "source": "visual_mrjbc102",
+      "source_handle": "visual",
+      "target": "compose_mrjbc104",
+      "target_handle": "visual"
+    },
+    {
+      "source": "subtitle_mrsubtitle1",
+      "source_handle": "subtitles",
+      "target": "compose_mrjbc104",
+      "target_handle": "subtitles"
+    },
+    {
+      "source": "live2d_mrjbc103",
+      "source_handle": "live2d",
+      "target": "compose_mrjbc104",
+      "target_handle": "live2d"
+    },
+    {
+      "source": "download_mrdg2wo7",
+      "source_handle": "media",
+      "target": "voice_visual_director_mrjbc100",
+      "target_handle": "media"
+    },
+    {
+      "source": "tech_broadcast_script_agent_mrgo9jjk",
+      "source_handle": "scripts",
+      "target": "tts_mrm77bf6",
+      "target_handle": "scripts"
+    },
+    {
+      "source": "tts_mrm77bf6",
+      "source_handle": "audio",
+      "target": "voice_visual_director_mrjbc100",
+      "target_handle": "audio"
+    },
+    {
+      "source": "tts_mrm77bf6",
+      "source_handle": "scripts",
+      "target": "voice_visual_director_mrjbc100",
+      "target_handle": "scripts"
+    },
+    {
+      "source": "tts_mrm77bf6",
+      "source_handle": "audio",
+      "target": "compose_mrjbc104",
+      "target_handle": "audio"
     }
   ],
   "created_at": "2026-07-09T19:49:59.385276",
-  "updated_at": "2026-07-10T01:00:10.583490"
+  "updated_at": "2026-07-17T21:24:07.094255",
+  "validation_errors": [],
+  "draft": false
 }

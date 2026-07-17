@@ -139,6 +139,7 @@ class DirectorNode(BaseNode):
 
         ai_topics = selection.get("ai_topics", [])
         if ai_topics:
+            on_progress(f"生成 AI 日报脚本: {len(ai_topics)} 个选题", 0.65)
             ai_script = await asyncio.to_thread(
                 director.generate_aggregated_script,
                 topics=ai_topics,
@@ -150,9 +151,11 @@ class DirectorNode(BaseNode):
             )
             if ai_script:
                 scripts.append(ai_script)
+            on_progress("AI 日报脚本生成完成", 0.78)
 
         hot_topics = selection.get("hot_topics", [])
         if hot_topics:
+            on_progress(f"生成热搜脚本: {len(hot_topics)} 个选题", 0.82)
             hot_script = await asyncio.to_thread(
                 director.generate_aggregated_script,
                 topics=hot_topics,
@@ -163,6 +166,7 @@ class DirectorNode(BaseNode):
             )
             if hot_script:
                 scripts.append(hot_script)
+            on_progress("热搜脚本生成完成", 0.92)
 
         # 构建 ScriptsData
         script_files = sorted(scripts_dir.glob("*.json"))

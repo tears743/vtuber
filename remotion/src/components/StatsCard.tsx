@@ -28,10 +28,12 @@ export const StatsCard: React.FC<StatsCardProps> = ({
   const fadeOut = interpolate(frame, [75, 90], [1, 0], { extrapolateLeft: "clamp" });
 
   // 数字递增动画
-  const starsNum = parseFloat(stars.replace(/[^0-9.]/g, "")) || 0;
-  const starsUnit = stars.replace(/[0-9.]/g, "") || "";
-  const forksNum = parseFloat(forks.replace(/[^0-9.]/g, "")) || 0;
-  const forksUnit = forks.replace(/[0-9.]/g, "") || "";
+  const starsText = String(stars ?? "0");
+  const forksText = String(forks ?? "0");
+  const starsNum = parseFloat(starsText.replace(/[^0-9.]/g, "")) || 0;
+  const starsUnit = starsText.replace(/[0-9.]/g, "") || "";
+  const forksNum = parseFloat(forksText.replace(/[^0-9.]/g, "")) || 0;
+  const forksUnit = forksText.replace(/[0-9.]/g, "") || "";
   
   const counterProgress = interpolate(frame, [10, 40], [0, 1], {
     extrapolateLeft: "clamp",
